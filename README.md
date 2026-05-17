@@ -1,7 +1,7 @@
 # Beneath the Surface of Mixed-Precision Summation in High Performance Computing
 ### Tomorrow's Accuracy at Yesterday's Cost
 
-> **Score: 9992.26 / 10000** on the official benchmark.
+> **Score: 9998.97 / 10000** on the official benchmark.
 
 ## Abstract
 
@@ -13,7 +13,8 @@ Floating-point summation is the primitive operation at the core of dot products,
 - [Hardware Context](#hardware-context)
 - [A Hardware-Aligned Efficiency Metric](#a-hardware-aligned-efficiency-metric)
 - [Non-technical Explanation](#non-technical-explanation)
-- [Evaluation of Different Approaches](#evaluation-of-different-approaches)
+- [Evaluation of Different Approaches by Frontier AI Models](#evaluation-of-different-approaches-by-frontier-ai-models)
+- [A Better Solution](#a-better-solution)
 - [Reproduce Results](#reproduce-results)
 
 ## The Problem
@@ -74,6 +75,8 @@ $$\mathcal{E} = \alpha \cdot \beta, \qquad \mathcal{E} \in [0,\,1]$$
 
 Blueprints approaching $\mathcal{E} = 1$ simultaneously achieve fp32-grade accuracy and fp16-grade cost, which is the operating point mixed-precision scientific computation targets in practice.
 
+**A theoretical ceiling below 10,000.** The maximum possible total score, 10,000, is unreachable. With $n = 275{,}000$ uniform values in $[0, 1)$, the exact sum is approximately $137{,}500$, which falls in an fp16 binade with representable spacing of $128$. Any blueprint whose final addition occurs in fp16 produces a result that has been quantised to that spacing, contributing at least $\sim 64$ units of irreducible error in the worst case. Even when the final addition is promoted to fp32 or fp64, intermediate fp16 partial sums introduce errors that cannot be recovered downstream. Empirical analysis suggests the true ceiling lies between $9{,}990$ and $9{,}999.6$; scores above this range are not attainable by any blueprint.
+
 ## Non-technical Explanation
 
 Computers represent decimal numbers using a fixed number of digits. The more digits, the more accurate the representation, but also the more memory each number occupies, and the more time each arithmetic operation takes. Three standard formats are in widespread use today, and they sit at very different points on this tradeoff. The largest format, fp64, holds about 16 digits and is the historical default for any computation where accuracy matters. The middle format, fp32, holds about 7 digits at half the cost. The smallest format, fp16, holds only 3 digits but runs roughly eight times faster than fp64 on modern GPUs.
@@ -84,15 +87,190 @@ This problem asks how to sum a list of 275,000 numbers under that constraint. Ad
 
 The answer is to mix the formats. Most of the additions can happen in fp16 with negligible error, provided the values being added are similar in magnitude to one another. The handful of additions where errors would be largest, typically the last few, where partial sums have grown large and small contributions risk being lost, can be promoted to fp32 or fp64. The blueprint specifies which precision to use at each step and in what order the additions occur. A well-designed blueprint achieves the accuracy of a pure fp32 computation at close to the cost of a pure fp16 one.
 
-The animation below shows a small blueprint executing on four input values. The pairs `(0.7856, 0.4204)` and `(0.1843, 0.9117)` are each summed in fp16, after which the two results are summed in fp32. The red zeros mark digits that fp16 cannot represent. They appear in the result not because the calculation produced them, but because the next stage's fp32 adder expects seven digits of input and the fp16 stage only gave it three of meaning. The trailing zeros are treated as genuine input by the fp32 adder, which is why the final result `2.290000` differs from the exact value `2.302023` by more than fp32 alone would produce.
+The animation below shows a small blueprint executing on five input values. The inner `(fp32 2 3)` evaluates first, then its result combines with values 1 and 4 in fp16, then that result combines with value 5 in fp64. Red zeros mark digits that the corresponding precision cannot represent. They appear in operands and results not because the calculation produced them, but because each precision can only hold a fixed number of digits, and the remaining columns are filled with zeros that the next stage's adder still consumes as real input. The error visible at the end of the animation comes entirely from the fp16 stages in the middle: the final fp64 add cannot recover bits that fp16 has already discarded.
 
 ![Mixed-precision evaluation animation](assets/evaluation.gif)
 
-## Evaluation of Different Approaches
+## Evaluation of Different Approaches by Frontier AI Models
 
-A series of progressively stronger blueprints were evaluated against the benchmark. Each row reports the total score across all 100 cases out of a maximum of 10,000.
+Each row below reports the total score across all 100 cases out of a maximum of 10,000. All scores were measured by running the listed solver against the official benchmark and harness; none are estimated.
 
-[Soon to be written]: #
+### Single-precision baselines
+
+The simplest possible blueprints serve as reference points. Each uses one precision throughout, applied to a sorted-magnitude pairwise binary tree (or, for the linear case, the values in input order). These set the floor for what is achievable without any mixed-precision strategy.
+
+| Approach | Score | Notes |
+|---|---|---|
+| All-fp16, linear left-to-right | 9.02 | Catastrophic absorption: running sum exceeds fp16's precision regime after a few thousand adds. |
+| All-fp16, sorted pairwise tree | 0.00 | Overflows. Partial sums near 137,500 exceed fp16's max representable value of 65,504; the result saturates to infinity. |
+| All-fp32, sorted pairwise tree | 4,987 | $\alpha \approx 1.00$, $\beta = 0.5$. Fully accurate but pays the full fp32 cost everywhere. |
+| All-fp64, sorted pairwise tree | 1,250 | $\alpha = 1.00$, $\beta = 0.125$. Maximally accurate, maximally expensive. |
+
+Two of these results are immediately informative. fp64 and fp32 are bound by the cost ceiling: $\beta = 0.125$ and $\beta = 0.5$ respectively, both with $\alpha = 1$, so they sit exactly on the cost axis with nowhere to go. The fp16 results show that the precision-only direction is also blocked: the linear schedule scores 9 because of absorption, and the sorted pairwise tree scores 0 because fp16's representable range is exhausted before the sum completes. No single-precision approach can exceed roughly 5,000.
+
+### Frontier AI baselines
+
+Nine submissions were collected from contemporary language models across two operating modes. In the "Fast" mode, the model received only the problem statement and was instructed that the first token of its response must be Python code; it was given exactly one attempt. In the "Thinking" mode, the model received the problem statement, the grading harness (`g.py`, `gen.py`, `judge.cpp`), and the ability to test its output against the benchmark before submission; it was given an initial scoring of its first attempt, then permitted one revision based on that feedback, with the revision's score reported. In the case of an initial submission that timed out or crashed, the revision was scored under the same single-revision rule. Hardcoded outputs, lookup tables, and seed-dependent branching were disallowed.
+
+| Model | Score |
+|---|---|
+| ChatGPT 5.5 Heavy Thinking | 9,991.78 |
+| Claude Opus 4.7 Thinking | 8,274.74 |
+| Claude Sonnet 4.6 Thinking | 8,194.05 |
+| ChatGPT 5.5 Fast | 7,672.71 |
+| DeepSeek V4 Thinking | 7,418.34 |
+| Claude Sonnet 4.6 Fast | 6,964.04 |
+| Grok 4 Fast | 6,963.40 |
+| Claude Opus 4.7 Fast | 0.00 |
+| DeepSeek V4 Fast | 0.00 |
+
+**Observations.** Among Fast submissions, three of the models converged independently on essentially the same approach: sort by magnitude, group into fixed-size fp16 chunks, and combine in fp32. The differences between them came down to the fp32 combination step (flat versus tree versus hierarchical fan-out), accounting for roughly 700 points of spread. The two models that scored zero in Fast mode did so for different reasons. Claude Opus 4.7 Fast reasoned that input values should be bucketed by magnitude before summing in fp16, an approach that is more principled in concept but ignores that fp16's representable maximum is 65,504, which the largest bucket exceeds. DeepSeek V4 Fast produced a syntactically valid solver whose tree-construction code crashed at runtime due to a structural bug.
+
+Under the Thinking condition, the picture changes substantially. ChatGPT 5.5 Heavy Thinking converged on essentially the same algorithmic family as the final Frontier Beam-Search solver in the next section: sorted fp16 blocks of size around 1,000, multi-piece splits for selected blocks (2, 4, or 8 way), a subset-sum dynamic program for choosing which blocks to split, and an fp64 root reduction. Its score of 9,991.78 sits within the saturation regime of the benchmark, roughly seven points below the final Frontier Beam-Search solver. The Claude models found variations on the structure without the error-correction step, scoring near 8,200. DeepSeek V4 Thinking developed an original priority-queue merging approach with precision chosen by subtree size, scoring 7,418.
+
+The Fast and Thinking score ranges (roughly 7,000 at the top of Fast, roughly 9,990 at the top of Thinking) are not narrow refinements of one another. They represent different regimes of engagement with the problem, and the gap between them is filled almost entirely by empirical testing and revision against the grading harness.
+
+## A Better Solution
+
+A perfect score of 10,000 on this benchmark is not achievable. The binade argument given earlier puts the absolute ceiling somewhere between 9,990 and 9,999.6 depending on how the residual fp16 rounding error happens to land. The Frontier Beam-Search solver scores 9,998.97, near the high end of that range.
+
+Rather than presenting "the solution" as a single deliverable, the algorithmic landscape decomposes naturally into four tiers. Each tier corresponds to clearing a specific score threshold, which in turn requires a specific algorithmic insight that the submissions below it did not have. The four tiers below capture the qualitative jumps; together they take a solver from the single-precision floor to within striking distance of the empirical ceiling.
+
+### Tier I: > 5,000
+
+Single-precision baselines do not clear this tier. All-fp32 sorted pairwise (4,987) sits just below the threshold, with $\alpha = 1$ but $\beta = 0.5$. To cross 5,000, a solver must use at least some fp16 operations to reduce the cost factor, accepting some accuracy loss in exchange.
+
+**Insight I: introduce fp16 grouping.** Sort the values by magnitude, partition them into fp16 chunks, then combine the chunk outputs in fp32. As long as the chunks are small enough to preserve fp32-grade accuracy ($\alpha = 1$), the lower fp16 cost weight raises $\beta$ above 0.5 and clears Tier I.
+
+A minimal implementation that scores 6,963 (well above the 5,000 threshold):
+
+```python
+def solve(n, values):
+    if n == 1:
+        return "1"
+    order = sorted(range(n), key=lambda i: values[i])
+    labels = [str(i+1) for i in order]
+    chunks = []
+    for i in range(0,n,32):
+        ch = labels[i:i+32]
+        chunks.append("(fp16 " + " ".join(ch) + ")" if len(ch) > 1 else ch[0])
+    return "(fp32 " + " ".join(chunks) + ")"
+```
+
+The following baselines clear Tier I but not Tier II:
+
+- [`sorted_chunks32_fp32_hierarchical_fanout96.py`](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks32_fp32_hierarchical_fanout96.py) - 6,964.64
+- [`sorted_chunks32_fp64_at_root.py`](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks32_fp64_at_root.py) - 6,964.25
+- [`sorted_chunks32_fp32_tree.py`](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks32_fp32_tree.py) - 6,963.40
+- [`sorted_chunks32_fp32_flat.py`](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks32_fp32_flat.py) - 6,963.40
+- [`sorted_chunks4_fp32_tree.py`](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks4_fp32_tree.py) - 6,400.32
+- [`sorted_chunks64_fp32_tree.py`](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks64_fp32_tree.py) - 6,319.78
+- [`sorted_chunks128_fp32_tree.py`](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks128_fp32_tree.py) - 5,522.41
+
+### Tier II: > 7,000
+
+The natural sorted-and-blocked structure with chunk size 32 lands at the floor of this regime, scoring 6,963-6,964 across multiple independent implementations of the same idea. To cross 7,000, a solver needs to break the symmetric flat-block structure: either choose block sizes that respond to the input distribution rather than a hardcoded constant, or use a smaller fixed block size near the local optimum.
+
+**Insight II: tune block size or use a hierarchical reduction.** Tuning the fp16 chunk size to 12 (rather than the convergent 32 most no-thinking AIs picked) keeps $\alpha$ at the fp32 mantissa ceiling on more cases. A 32-value fp16 chunk loses accuracy near the top of the distribution; a 12-value chunk does not. Alternatively, adapting chunk size to the input mean produces comparable results.
+
+The Tier I code above clears Tier II with two changes: shrink the chunk size to 8 or smaller, and add a pairwise fp32 reduction tree on top of the chunks (the flat fp32 group becomes a balanced tree). This scores 7,381:
+
+```python
+def solve(n, values):
+    if n == 1:
+        return "1"
+    order = sorted(range(n), key=lambda i: values[i])
+    labels = [str(i+1) for i in order]
+    chunks = []
+    for i in range(0,n,8):
+        ch = labels[i:i+8]
+        chunks.append("(fp16 " + " ".join(ch) + ")" if len(ch) > 1 else ch[0])
+    while len(chunks) > 1:
+        nxt = []
+        for i in range(0,len(chunks)-1,2):
+            nxt.append("(fp32 " + chunks[i] + " " + chunks[i+1] + ")")
+        if len(chunks) % 2:
+            nxt.append(chunks[-1])
+        chunks = nxt
+    return chunks[0]
+```
+
+The following baselines clear Tier II but not Tier III:
+
+- [`sorted_chunks8_fp32_tree.py`](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks8_fp32_tree.py) - 7,381.37
+- [`unsorted_chunks32_fp32_tree.py`](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/unsorted_chunks32_fp32_tree.py) - 7,285.81
+
+### Tier III: > 7,500
+
+The strongest no-thinking AI submission (ChatGPT 5.5 Fast at 7,672) and both Claude with-harness submissions (Sonnet Thinking 8,194; Opus Thinking 8,275) sit inside this tier, as does ChatGPT 5.5 Heavy Thinking at 9,991.78. The tier therefore spans a very wide score band, from the entry threshold near 7,500 up to roughly 9,990. The lower end is reached by careful one-shot design with adaptive block sizing or hierarchical fp32 reduction. The upper end requires the qualitative reframing described next.
+
+**Insight III: reframe correction as a subset-sum problem.** Build a baseline blueprint that produces residual error $E$, then enumerate small modifications (split a block in two, upgrade a block to fp32, expose a child node), each with a known cost and known $\Delta E$. Selecting which modifications to apply becomes a knapsack-like subset-sum: find a subset whose cumulative $\Delta E$ cancels $E$ at minimum additional cost. A bitmask dynamic program solves this reliably in the budget. This reframing is what pushes a solver from the 8,000 range up to the upper end of Tier III near 9,990.
+
+The entry threshold for Tier III, near 7,500, can be reached without the subset-sum reframing by using a chunk size of 12 with the same sort-and-tree structure as Tier II. This scores 7,739:
+
+```python
+def solve(n, values):
+    if n == 1:
+        return "1"
+    order = sorted(range(n), key=lambda i: values[i])
+    labels = [str(i+1) for i in order]
+    chunks = []
+    for i in range(0,n,12):
+        ch = labels[i:i+12]
+        chunks.append("(fp16 " + " ".join(ch) + ")" if len(ch) > 1 else ch[0])
+    while len(chunks) > 1:
+        nxt = []
+        for i in range(0,len(chunks)-1,2):
+            nxt.append("(fp32 " + chunks[i] + " " + chunks[i+1] + ")")
+        if len(chunks) % 2:
+            nxt.append(chunks[-1])
+        chunks = nxt
+    return chunks[0]
+```
+
+The following baselines clear Tier III but not Tier IV:
+
+- [`sorted_chunks12_fp32_tree.py`](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks12_fp32_tree.py) - 7,739.31
+- [`sorted_adaptive_chunk_fp32_tree.py`](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_adaptive_chunk_fp32_tree.py) - 7,672.71
+- [`sorted_chunks16_fp32_tree.py`](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks16_fp32_tree.py) - 7,554.19
+
+Reaching the upper end of the Tier III band, near 9,990, requires the subset-sum reframing. ChatGPT 5.5 Heavy Thinking implements one realization of this idea.
+
+### Tier IV: > 9,995
+
+Tier III solutions, even at their upper end, implement the subset-sum reframing with fixed-shape modifications (full block upgrades, half/quarter/eighth splits). Beating this regime requires extending the candidate pool beyond fixed-shape splits into a continuous space of partial-tree exposures.
+
+**Insight IV: frontier beam search for selective node exposure.** Construct a precomputed fp16 reduction tree, then run a beam search that selectively exposes child nodes at each level to fine-tune residual error. Each exposed child node trades one fp16 add for finer-grained control over $E$. The beam keeps the candidate set diverse enough that the subset-sum DP can find approximate-zero combinations on cases where coarser-grained correction misses by a single bit. The Frontier Beam-Search solver clears this tier at 9,998.97.
+
+### Per-tier comparison table
+
+The chart below shows which tiers each hand-tested baseline cleared. AI submission results appear in their own table in the previous section. A filled cell indicates that the baseline's total score met the threshold for that tier.
+
+| Baseline | Score | Tier I (>5,000) | Tier II (>7,000) | Tier III (>7,500) | Tier IV (>9,995) |
+|---|---|:---:|:---:|:---:|:---:|
+| Frontier Beam-Search | 9,998.97 | ✓ | ✓ | ✓ | ✓ |
+| Sorted, chunks=12, fp32 tree | 7,739.31 | ✓ | ✓ | ✓ | |
+| Sorted, adaptive chunk by mean, fp32 tree | 7,672.71 | ✓ | ✓ | ✓ | |
+| Sorted, chunks=16, fp32 tree | 7,554.19 | ✓ | ✓ | ✓ | |
+| Sorted, chunks=8, fp32 tree | 7,381.37 | ✓ | ✓ | | |
+| Unsorted, chunks=32, fp32 tree | 7,285.81 | ✓ | ✓ | | |
+| Sorted, chunks=32, fp32 hierarchical fan-out 96 | 6,964.64 | ✓ | | | |
+| Sorted, chunks=32, fp64 at root | 6,964.25 | ✓ | | | |
+| Sorted, chunks=32, fp32 tree | 6,963.40 | ✓ | | | |
+| Sorted, chunks=32, flat fp32 group | 6,963.40 | ✓ | | | |
+| Sorted, chunks=4, fp32 tree | 6,400.32 | ✓ | | | |
+| Sorted, chunks=64, fp32 tree | 6,319.78 | ✓ | | | |
+| Sorted, chunks=128, fp32 tree | 5,522.41 | ✓ | | | |
+| All-fp32 sorted pairwise | 4,987.00 | | | | |
+| Sorted, chunks=256, fp32 tree | 4,711.29 | | | | |
+| Sorted, chunks=512, fp32 tree | 3,899.55 | | | | |
+| Linear fp32 | 3,692.49 | | | | |
+| Sorted, chunks=1024, fp32 tree | 3,111.42 | | | | |
+| All-fp64 sorted pairwise | 1,250.00 | | | | |
+| All-fp16 linear | 9.02 | | | | |
+| All-fp16 sorted pairwise | 0.00 | | | | |
+
+Among the hand-tested baselines, only the Frontier Beam-Search solver clears Tier IV. A small number of moderately-tuned baselines cross Tier III. The remainder cluster in Tier II or below, where the no-thinking AI submissions also converged. The wide spread within each tier illustrates how parameter choices that look minor (block size, fp32 reduction shape, sort vs. no-sort) translate into substantial score differences across the lower regime, while parameter tuning alone cannot reach Tier IV.
 
 ## Reproduce Results
 
