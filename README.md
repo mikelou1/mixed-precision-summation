@@ -1,7 +1,4 @@
 # Beneath the Surface of Mixed-Precision Summation in High Performance Computing
-### Tomorrow's Accuracy at Yesterday's Cost
-
-> **Score: 9998.97 / 10000** on the official benchmark.
 
 ## Abstract
 
