@@ -46,7 +46,7 @@ The metric is grounded in measurable hardware behavior rather than chosen for an
 
 $$\eta = \frac{|S - \Sigma|}{\Sigma + \tau}$$
 
-where $\tau$ is a small stabilising constant. The accuracy factor is
+where $\tau = 10^{-10}$ is a stabilising constant that prevents division by zero in the degenerate case $\Sigma = 0$ and is negligible at the working scale of $\Sigma \approx 137{,}500$. The accuracy factor is
 
 $$\alpha = \min\!\left(1,\ \max\!\left(0,\ \frac{-\log_2 \eta}{24}\right)\right)$$
 
