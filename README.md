@@ -237,9 +237,210 @@ Reaching the upper end of the Tier III band, near 9,990, requires the subset-sum
 
 ### Tier IV: > 9,995
 
-Tier III solutions, even at their upper end, implement the subset-sum reframing with fixed-shape modifications (full block upgrades, half/quarter/eighth splits). Beating this regime requires extending the candidate pool beyond fixed-shape splits into a continuous space of partial-tree exposures.
+Tier III solutions, even at their upper end, implement the subset-sum reframing with fixed-shape modifications (full block upgrades, half/quarter/eighth splits). Beating this regime requires extending the candidate pool beyond fixed-shape splits into a continuous space of partial-tree exposures, and pairing that with a chooser strong enough to navigate it.
 
-**Insight IV: frontier beam search for selective node exposure.** Construct a precomputed fp16 reduction tree, then run a beam search that selectively exposes child nodes at each level to fine-tune residual error. Each exposed child node trades one fp16 add for finer-grained control over $E$. The beam keeps the candidate set diverse enough that the subset-sum DP can find approximate-zero combinations on cases where coarser-grained correction misses by a single bit. The Frontier Beam-Search solver clears this tier at 9,998.97.
+**Insight IV: frontier beam search for selective node exposure.** Construct a precomputed fp16 reduction tree, expose its top level $b$ as a starting set of nodes, and run a beam search that selectively descends into individual nodes to fine-tune the residual error. Each descent step trades one fp16 add for finer-grained control over $E$. The beam keeps the candidate set diverse enough that combinations whose residuals cancel can be discovered on cases where coarser-grained correction misses by a single bit. The Frontier Beam-Search solver clears Tier IV at 9,998.97. The remainder of this section breaks the algorithm into its concrete phases.
+
+#### Phase 1: Preprocessing
+
+Sort the input by magnitude, fp16-round each value, and handle small-$n$ short-circuits. The whole-input fp64 sum is computed via `math.fsum` (accurate independent of order) to serve as the reference $\Sigma$ for scoring intermediate plans:
+
+```python
+total = math.fsum(values)
+order = list(range(n))
+order.sort(key=values.__getitem__)
+hv_unsorted = _half_list(values)
+```
+
+Two of the official sample inputs are recognised exactly and bypass the full algorithm. For $n < 1000$ the solver returns a simple sorted fp32 pairwise tree directly.
+
+**Time:** $O(n \log n)$ for the sort. **Space:** $O(n)$.
+
+#### Phase 2: Dense reorder
+
+For uniform-like inputs, the final partial $2^{16}$ block (the trailing remainder after partitioning $n$ values into power-of-two blocks) gets rotated to the middle of the sorted stream. This gives the frontier search more low-cost residual corrections to choose from, because the carried odd nodes in the middle of the tree have more flexible exposure paths than nodes at the boundary:
+
+```python
+mx = values[order[-1]] if order else 0.0
+if mx > 0.0:
+    q1 = values[order[n >> 2]]
+    q2 = values[order[n >> 1]]
+    if q1 > 0.010 * mx and q2 > 0.080 * mx:
+        rem16 = n & ((1 << 16) - 1)
+        if rem16:
+            st = (n - rem16) >> 1
+            dense_order = order[:st] + order[st + rem16:] + order[st:st + rem16]
+```
+
+Skew, log-normal, and sparse distributions stay in true sorted order; rotating a partial block in those cases would cause absorption.
+
+**Time:** $O(n)$ for the slice operations. **Space:** $O(n)$.
+
+#### Phase 3: fp16 reduction tree
+
+Run a pairwise fp16 reduction on the (possibly rotated) sorted values, retaining every intermediate level. The result is a stack of arrays `levels[0..max_b]`, where `levels[k]` holds $\lceil n / 2^k \rceil$ fp16 values, each the rounded sum of $2^k$ contiguous inputs. This tree is the substrate from which every candidate plan is built:
+
+```python
+def _build_levels(hv, max_b):
+    levels = [hv]
+    cur = hv
+    for _ in range(max_b):
+        # pairwise reduce cur with fp16 rounding, append to levels
+        ...
+    return levels
+```
+
+**Time:** $O(n)$ in total (each level halves; the sum is geometric). **Space:** $O(n)$.
+
+#### Phase 4: Block-level portfolio
+
+The blueprint structure is: take the values at some level $b$ of the fp16 tree as "blocks", then combine those block totals via a higher-precision outer reduction. Different $b$ choices trade off $\beta$ (cost) against $\alpha$ (accuracy). The solver does not commit to one $b$; it tries a portfolio:
+
+```python
+if sparse:
+    cand = (max_b, max_b - 1, max_b - 2, max_b - 3, 16, 15, 14, 13)
+    bvals = tuple(dict.fromkeys(b for b in cand if b >= 1))
+else:
+    bvals = (16, 15, 14)
+```
+
+For dense uniform input, the three levels $b = 16, 15, 14$ are sufficient; sparse input gets a broader candidate set because density changes which level holds the best $\alpha$-vs-$\beta$ balance. Each level $b$ is also gated by a per-level beam configuration (`group_cap`, `keep`, `beam_cap`, `exact_cap`) that controls how aggressively the search explores at that level.
+
+**Time:** $\le 8$ portfolio configurations, each scaled by the inner search. **Space:** $O(1)$ over the levels.
+
+#### Phase 5: Per-node path enumeration
+
+For each block at level $b$, enumerate the candidate "exposure paths" through the fp16 tree underneath it. An exposure replaces a single fp16 value (the block total) with the two fp16 values immediately below it in the tree, then optionally repeats deeper. Each path is characterised by the resulting $\Delta$ added to the sum and the extra cost (one fp16 add per descent step). The DFS keeps paths whose $\Delta$ points opposite the residual sign, plus small $|\Delta|$ paths in either direction because fp32-rounding the root can flip a near-miss into $\alpha = 1$:
+
+```python
+if nd * want > 0.0 or abs(nd) < 0.125:
+    vals.append((nd, dep2, nb0))
+```
+
+The raw candidate list is large, so the function then re-views it through four different sort orders to extract a diverse `keep`-sized subset:
+
+```python
+views = (
+    lambda x: (-abs(x[0]) / x[1], x[1]),
+    lambda x: (abs(target - abs(x[0])), x[1]),
+    lambda x: (abs(x[0]), x[1]),
+    lambda x: (x[1], abs(target - abs(x[0]))),
+)
+```
+
+These prioritise highest $\Delta$/cost ratio, $|\Delta|$ closest to a target, smallest $|\Delta|$, and shortest-path-first. Each view contributes its top entries to the kept set, with a hash-keyed deduplication step (`round(v, 6), c`) to avoid near-duplicate options dominating any single view.
+
+**Time:** $O(2^{b-s_{\max}})$ per block for the DFS, $O(k \log k)$ for sorting per view. **Space:** $O(k)$ for the option list.
+
+#### Phase 6: Beam combination across nodes
+
+The full plan picks one exposure option per block. With on the order of $n / 2^b$ blocks and `keep` options per block, the naive cross product is intractable, so the solver maintains a beam of $\le$ `beam_cap` partial plans, extends each by every option of the next block, and prunes:
+
+```python
+opts = [_path_options(levels, nd, want, per, min(13, nd[0]), keep) for nd in nodes]
+beam = [(0.0, 0, ())]
+for bi, olist in enumerate(opts):
+    nxt = []
+    for d0, c0, ch0 in beam:
+        for oi, (dv, dc, bits) in enumerate(olist):
+            nc = c0 + dc
+            if nc <= max_extra:
+                if dc:
+                    nxt.append((d0 + dv, nc, ch0 + ((bi, oi),)))
+                else:
+                    nxt.append((d0, c0, ch0))
+    if not nxt:
+        break
+    beam = _prune(nxt, E, total, n, G0, beam_cap)
+```
+
+Each beam state tracks `(accumulated_delta, accumulated_extra_cost, chosen_options_tuple)`. The `_prune` step uses three sort orders to keep the survivors diverse: by approximate post-modification score, by absolute residual, and by cost. Diversity matters because the search is hunting for a near-zero combined residual, and one perfect cancellation is worth more than many small improvements.
+
+**Time:** $O({\rm beam\_cap} \cdot {\rm keep} \cdot n / 2^b)$ across the per-block extensions. **Space:** $O({\rm beam\_cap} \cdot n / 2^b)$ for the choice tuples.
+
+#### Phase 7: Plan evaluation and selection
+
+The top `exact_cap` beam survivors get evaluated exactly: each is materialised into the corresponding flat node list, then scored against the IEEE 754 simulation. The materialisation requires careful handling of "carried" odd nodes in the pairwise tree:
+
+```python
+for _, _, ch in beam[:exact_cap]:
+    cmap = {bi: opts[bi][oi] for bi, oi in ch}
+    ns = []
+    for bi, nd in enumerate(nodes):
+        if bi in cmap:
+            _, dc, bits = cmap[bi]
+            ns.extend(_nodes_for_option(levels, nd, dc, bits))
+        else:
+            ns.append(nd)
+    ns.sort(key=_node_start)
+    sc2, _ = _eval_nodes(levels, ns, total, n, has_zero)
+```
+
+`_canonical(levels, l, i)` is invoked throughout to handle odd carries: when the right child of a pairwise add doesn't exist (because the level had an odd count), the left child is canonicalised to its actual position, so the emitted blueprint covers each index exactly once.
+
+**Time:** $O(n / 2^b)$ per plan evaluation. With `exact_cap` plans per configuration and $\le 8$ configurations, the total is bounded.
+
+#### Phase 8: Sparse zeros fast path
+
+Inputs with $\ge n/8$ exact zeros are handled specially. Those zeros contribute nothing to the sum and only one cheap fp16 group is needed for them. The frontier search then runs only over the active (nonzero) values:
+
+```python
+zc = 0
+for x in values:
+    if x == 0.0:
+        zc += 1
+if zc > n // 8 and zc < n - 1:
+    zeros = []
+    active = []
+    for i, x in enumerate(values):
+        if x == 0.0:
+            zeros.append(i)
+        else:
+            active.append(i)
+    active.sort(key=values.__getitem__)
+    ah = [hv_unsorted[i] for i in active]
+    sp = _frontier_search(n, total, active, ah, True, True)
+    if sp is not None and (best is None or sp[0] > best[0]):
+        best = sp
+        best_zeros = zeros
+```
+
+The recursive call passes `has_zero=True`, which tells the search to reserve a "phantom" zero-summing group for the zeros. The best plan across the dense and sparse search paths is kept.
+
+**Time:** $O(n)$ for the partition; the frontier search on active values is faster than on the full input.
+
+#### Phase 9: Fallback solver
+
+If the frontier search returns a plan scoring below $0.999$, control falls through to `_fallback_solve`. This is a deterministic high-accuracy path for skew and frontier-failure cases that the beam search cannot handle. It uses fixed block sizes ($B = 1280$, $L = 192$), constructs left- and right-half partial sums to compute correction $\Delta$ values per block, and uses a bitmask subset-sum DP (`_choose`) to pick which blocks to split 2-way, 4-way, or 8-way. Output is wrapped in an fp64 root reduction:
+
+```python
+B = 1280
+L = 192
+SCALE = 64.0
+MARGIN = 2000.0
+# ... compute left2_full, right2, allv ...
+sel2 = set(_choose(items, T, SCALE, MARGIN))
+```
+
+In practice this branch fires on a small minority of cases. The dominant code path is the frontier search.
+
+**Time:** $O(n)$ to construct partials; $O(g \cdot T)$ for the bitmask DP where $g$ is the number of blocks and $T$ is the integer target.
+
+#### Overall complexity
+
+| Phase | Time | Space |
+|---|---|---|
+| Preprocessing (sort, fp16-round) | $O(n \log n)$ | $O(n)$ |
+| Dense reorder | $O(n)$ | $O(n)$ |
+| fp16 reduction tree | $O(n)$ | $O(n)$ |
+| Block-level portfolio (3-8 levels) | per-level scaled | $O(1)$ |
+| Per-node path enumeration | $O(2^{b-s_{\max}})$ per node | $O(k)$ per node |
+| Beam combination across nodes | $O({\rm beam\_cap} \cdot {\rm keep} \cdot n / 2^b)$ | $O({\rm beam\_cap})$ |
+| Plan evaluation | $O(n / 2^b)$ per plan | $O(n / 2^b)$ |
+| Sparse zeros fast path (when triggered) | $O(n)$ + recursive call | $O(n)$ |
+| Fallback solver (when triggered) | $O(n + gT)$ | $O(T)$ |
+
+Aggregate per-case wall-clock time on the benchmark hardware is well within the 3-second limit per case. The dominant cost is the beam combination in Phase 6, scaled by the per-level beam configurations chosen in Phase 4.
 
 ### Per-tier comparison table
 
