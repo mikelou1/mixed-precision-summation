@@ -449,26 +449,26 @@ The chart below shows which tiers each hand-tested baseline cleared. AI submissi
 | Baseline | Score | Tier I (>5,000) | Tier II (>7,000) | Tier III (>7,500) | Tier IV (>9,995) |
 |---|---|:---:|:---:|:---:|:---:|
 | Frontier Beam-Search | 9,998.97 | ✓ | ✓ | ✓ | ✓ |
-| Sorted, chunks=12, fp32 tree | 7,739.31 | ✓ | ✓ | ✓ | |
-| Sorted, adaptive chunk by mean, fp32 tree | 7,672.71 | ✓ | ✓ | ✓ | |
-| Sorted, chunks=16, fp32 tree | 7,554.19 | ✓ | ✓ | ✓ | |
-| Sorted, chunks=8, fp32 tree | 7,381.37 | ✓ | ✓ | | |
-| Unsorted, chunks=32, fp32 tree | 7,285.81 | ✓ | ✓ | | |
-| Sorted, chunks=32, fp32 hierarchical fan-out 96 | 6,964.64 | ✓ | | | |
-| Sorted, chunks=32, fp64 at root | 6,964.25 | ✓ | | | |
-| Sorted, chunks=32, fp32 tree | 6,963.40 | ✓ | | | |
-| Sorted, chunks=32, flat fp32 group | 6,963.40 | ✓ | | | |
-| Sorted, chunks=4, fp32 tree | 6,400.32 | ✓ | | | |
-| Sorted, chunks=64, fp32 tree | 6,319.78 | ✓ | | | |
-| Sorted, chunks=128, fp32 tree | 5,522.41 | ✓ | | | |
-| All-fp32 sorted pairwise | 4,987.00 | | | | |
-| Sorted, chunks=256, fp32 tree | 4,711.29 | | | | |
-| Sorted, chunks=512, fp32 tree | 3,899.55 | | | | |
-| Linear fp32 | 3,692.49 | | | | |
-| Sorted, chunks=1024, fp32 tree | 3,111.42 | | | | |
-| All-fp64 sorted pairwise | 1,250.00 | | | | |
-| All-fp16 linear | 9.02 | | | | |
-| All-fp16 sorted pairwise | 0.00 | | | | |
+| [Sorted, chunks=12, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks12_fp32_tree.py) | 7,739.31 | ✓ | ✓ | ✓ | |
+| [Sorted, adaptive chunk by mean, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_adaptive_chunk_fp32_tree.py) | 7,672.71 | ✓ | ✓ | ✓ | |
+| [Sorted, chunks=16, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks16_fp32_tree.py) | 7,554.19 | ✓ | ✓ | ✓ | |
+| [Sorted, chunks=8, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks8_fp32_tree.py) | 7,381.37 | ✓ | ✓ | | |
+| [Unsorted, chunks=32, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/unsorted_chunks32_fp32_tree.py) | 7,285.81 | ✓ | ✓ | | |
+| [Sorted, chunks=32, fp32 hierarchical fan-out 96](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks32_fp32_hierarchical_fanout96.py) | 6,964.64 | ✓ | | | |
+| [Sorted, chunks=32, fp64 at root](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks32_fp64_at_root.py) | 6,964.25 | ✓ | | | |
+| [Sorted, chunks=32, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks32_fp32_tree.py) | 6,963.40 | ✓ | | | |
+| [Sorted, chunks=32, flat fp32 group](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks32_fp32_flat.py) | 6,963.40 | ✓ | | | |
+| [Sorted, chunks=4, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks4_fp32_tree.py) | 6,400.32 | ✓ | | | |
+| [Sorted, chunks=64, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks64_fp32_tree.py) | 6,319.78 | ✓ | | | |
+| [Sorted, chunks=128, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks128_fp32_tree.py) | 5,522.41 | ✓ | | | |
+| [All-fp32 sorted pairwise](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/all_fp32_sorted_pairwise.py) | 4,987.00 | | | | |
+| [Sorted, chunks=256, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks256_fp32_tree.py) | 4,711.29 | | | | |
+| [Sorted, chunks=512, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks512_fp32_tree.py) | 3,899.55 | | | | |
+| [Linear fp32](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/linear_fp32.py) | 3,692.49 | | | | |
+| [Sorted, chunks=1024, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks1024_fp32_tree.py) | 3,111.42 | | | | |
+| [All-fp64 sorted pairwise](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/all_fp64_sorted_pairwise.py) | 1,250.00 | | | | |
+| [All-fp16 linear](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/all_fp16_linear.py) | 9.02 | | | | |
+| [All-fp16 sorted pairwise](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/all_fp16_sorted_pairwise.py) | 0.00 | | | | |
 
 Among the hand-tested baselines, only the Frontier Beam-Search solver clears Tier IV. A small number of moderately-tuned baselines cross Tier III. The remainder cluster in Tier II or below, where the no-thinking AI submissions also converged. The wide spread within each tier illustrates how parameter choices that look minor (block size, fp32 reduction shape, sort vs. no-sort) translate into substantial score differences across the lower regime, while parameter tuning alone cannot reach Tier IV.
 
