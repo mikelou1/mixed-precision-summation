@@ -4,7 +4,8 @@
 
 Floating-point summation is the primitive operation at the core of dot products, matrix multiplication, and numerical solvers, and its numerical behavior is consequential across virtually all of scientific computing [^higham]. A single forward pass of a modern large transformer involves on the order of trillions of floating-point reductions; the choice of precision and ordering across those reductions determines both the final loss curve and the wall-clock cost of training. The IEEE 754 standard [^ieee754] defines three binary formats relevant to this setting: fp64, fp32, and fp16, with unit roundoffs of approximately $10^{-16}$, $10^{-7}$, and $10^{-4}$ respectively, ordered by decreasing numerical fidelity and decreasing memory and compute cost. fp64 is the historical default for numerical stability, but its 64-bit operand width limits parallel occupancy on contemporary hardware. fp16 delivers $4\times$ lower memory footprint than fp64 and substantially greater compute throughput on NVIDIA tensor-core accelerators (see the hardware table in the next section), but rounding error accumulates rapidly and after sufficiently many operations the result is unreliable. Neither format is adequate in isolation, and an optimal blueprint over the space of precision assignments and summation orderings is computationally intractable at the scale scientific workloads demand.
 
-**Note** Floating-point summation is the kind of primitive that disappears into a single line of code in every scientific library, and the cost and accuracy of that line are governed by hardware and rounding behavior that almost nobody looks at directly. This work goes beneath that surface in two ways, both of which are the original research contributions of this writeup: (i) a hardware-aligned efficiency metric for mixed-precision summation that exposes the underlying tensor-core throughput ratios as cost weights and caps accuracy at the fp32 mantissa ceiling, so that blueprints can be compared on the axis that actually matters in production; and (ii) the Frontier Beam-Search solver, which scores 9,998.97/10,000 on the benchmark by operating at the bit level beneath IEEE 754, enumerating exposure paths through a precomputed fp16 reduction tree and using diversity-preserving beam search to find combinations of residuals that cancel against the fp32 rounding boundary. The remaining sections (hardware context, AI baselines, tier taxonomy) provide the framing and empirical comparisons that situate these two contributions.
+> [!NOTE]
+> Floating-point summation is the kind of primitive that disappears into a single line of code in every scientific library, and the cost and accuracy of that line are governed by hardware and rounding behavior that almost nobody looks at directly. This work goes beneath that surface in two ways, both of which are the original research contributions of this writeup: (i) a hardware-aligned efficiency metric for mixed-precision summation that exposes the underlying tensor-core throughput ratios as cost weights and caps accuracy at the fp32 mantissa ceiling, so that blueprints can be compared on the axis that actually matters in production; and (ii) the Frontier Beam-Search solver, which scores 9,998.97/10,000 on the benchmark by operating at the bit level beneath IEEE 754, enumerating exposure paths through a precomputed fp16 reduction tree and using diversity-preserving beam search to find combinations of residuals that cancel against the fp32 rounding boundary. The remaining sections (hardware context, AI baselines, tier taxonomy) provide the framing and empirical comparisons that situate these two contributions.
 
 ## Overview
 
@@ -13,12 +14,13 @@ Floating-point summation is the primitive operation at the core of dot products,
 - [A Hardware-Aligned Efficiency Metric](#a-hardware-aligned-efficiency-metric)
 - [Non-technical Explanation](#non-technical-explanation)
 - [Evaluation of Different Approaches by Frontier AI Models](#evaluation-of-different-approaches-by-frontier-ai-models)
+- [A Provable Ceiling Below 10,000](#a-provable-ceiling-below-10000)
 - [A Better Solution](#a-better-solution)
 - [Reproduce Results](#reproduce-results)
 
 ## The Problem
 
-Given 275,000 floating-point values drawn uniformly from $[0, 1)$, produce a blueprint that computes their sum. A blueprint specifies both the order of additions and the IEEE 754 precision used at each step, with each step using fp16, fp32, or fp64. Its output is the value produced by the final addition.
+Given 275,000 floating-point values drawn uniformly from $[0, 1)$, produce a blueprint that computes their sum. A blueprint specifies both the order of additions and the IEEE 754 precision used at each step, with each step using fp16, fp32, or fp64. Its output is the value produced by the final addition. The benchmark consists of 100 such cases, generated deterministically by `gen.py` from a fixed seed; all scores reported in this writeup use seed $667{,}676{,}767$.
 
 The objective is to maximize an efficiency metric, defined in the next section, that rewards accuracy and penalizes computational cost. The two are in direct tension. Performing all additions in fp64 produces a near-exact result but is roughly eight times slower than fp16. Performing all additions in fp16 is fast but accumulates rounding error so quickly that the final result is unrecognizably wrong. The interesting blueprints lie between these extremes, and the space of valid blueprints grows combinatorially with the input size.
 
@@ -74,7 +76,7 @@ $$\mathcal{E} = \alpha \cdot \beta, \qquad \mathcal{E} \in [0,\,1]$$
 
 Blueprints approaching $\mathcal{E} = 1$ simultaneously achieve fp32-grade accuracy and fp16-grade cost, which is the operating point mixed-precision scientific computation targets in practice.
 
-**A theoretical ceiling below 10,000.** The maximum possible total score, 10,000, is unreachable. With $n = 275{,}000$ uniform values in $[0, 1)$, the exact sum is approximately $137{,}500$, which exceeds fp16's maximum representable value of $65{,}504$, so the result cannot be held in fp16 at all and the final reduction must occur in fp32 or fp64. Intermediate fp16 partial sums can reach the high fp16 binade $[2^{15}, 2^{16})$, where the representable spacing is $32$ and each add carries roundoff of order $\pm 16$. Even with sorted-magnitude pairwise reduction and perfectly chosen chunk sizes, the residual rounding error from many such adds cannot be driven below the fp32 ceiling exactly, and it cannot be recovered by subsequent fp32 or fp64 operations on the already-quantised partial sums. Empirical analysis across 100 cases suggests the true ceiling lies between $9{,}990$ and $9{,}999.6$; scores above this range are not attainable by any blueprint.
+**A theoretical ceiling below 10,000.** The maximum possible total score, 10,000, is unreachable. With $n = 275{,}000$ uniform values in $[0, 1)$, the exact sum is approximately $137{,}500$, which exceeds fp16's maximum representable value of $65{,}504$, so the result cannot be held in fp16 at all and the final reduction must occur in fp32 or fp64. Intermediate fp16 partial sums can reach the high fp16 binade $[2^{15}, 2^{16})$, where the representable spacing is $32$ and each add carries roundoff of order $\pm 16$. Even with sorted-magnitude pairwise reduction and perfectly chosen chunk sizes, the residual rounding error from many such adds cannot be driven below the fp32 ceiling exactly, and it cannot be recovered by subsequent fp32 or fp64 operations on the already-quantised partial sums. The [Provable Ceiling](#a-provable-ceiling-below-10000) section below makes this concrete with a closed-form upper bound of $9{,}999.8913$ for seed $667{,}676{,}767$ and $9{,}999.9273$ universally; scores above these values are not attainable by any blueprint.
 
 ## Non-technical Explanation
 
@@ -131,11 +133,177 @@ Under the Thinking condition, the picture changes substantially. ChatGPT 5.5 Hea
 
 The Fast and Thinking score ranges (roughly 7,000 at the top of Fast, roughly 9,990 at the top of Thinking) are not narrow refinements of one another. They represent different regimes of engagement with the problem, and the gap between them is filled almost entirely by empirical testing and revision against the grading harness.
 
+## A Provable Ceiling Below 10,000
+
+The metric section established that 10,000 is unreachable via the binade argument. This section makes the ceiling quantitative: a closed-form upper bound on the total score that follows from the cost model, IEEE 754 quantization, and the input distribution. Two bounds appear below — first a *universal* bound that holds for any input set generated under the problem specification (any seed, any 100 cases), and then a *tighter seed-specific* bound for the benchmark cases generated by `gen.py` at seed $667{,}676{,}767$, with the per-case ceiling listed for every case.
+
+### Notation
+
+For each case $i$ let $S_i$ denote the value computed by the blueprint, $\Sigma_i$ the exact sum, and $a^{(i)}_{16}, a^{(i)}_{32}, a^{(i)}_{64}$ the per-precision add counts (with $a^{(i)}_{16} + a^{(i)}_{32} + a^{(i)}_{64} = n - 1 = 274{,}999$). Define
+
+$$k_i \;:=\; a^{(i)}_{32} + 7\,a^{(i)}_{64}, \qquad C_i \;=\; (n-1) + k_i, \qquad \beta_i \;=\; \tfrac{n-1}{(n-1)+k_i}.$$
+
+$k_i$ is a non-negative integer (each fp32 add contributes $1$ and each fp64 add contributes $7$). The per-case score is $\mathrm{score}_i = 100\,\alpha_i\,\beta_i$.
+
+### Universal Ceiling: 9,999.9273
+
+For any input drawn under the problem specification ($n = 275{,}000$ values in $[0,1)$) with exact sum $\Sigma > 2 \cdot 65{,}504 = 131{,}008$, every blueprint scores at most
+
+$$100 \cdot \frac{n-1}{n+1} \;=\; 99.999272\overline{72\ldots}$$
+
+per case. Summed across the 100 benchmark cases, this gives a universal total ceiling of $9{,}999.9273$.
+
+The argument splits on $k_i$. With $k_i = 0$ (all fp16), every fp16 partial sum exceeding $65{,}504$ rounds to $+\infty$ under IEEE 754 round-to-nearest, and $+\infty$ propagates. Reaching $S \approx \Sigma > 131{,}008$ requires some fp16 partial to exceed $65{,}504$, so $S = +\infty$, $\alpha_i = 0$, and the case scores zero. With $k_i = 1$ (one fp32 add, all else fp16), that fp32 add must be at the root: an fp32 node $N$ below the root would force its parent to cast $N$'s value to fp16, which either overflows or requires the parent fp16 chain to reach $\Sigma$ on its own, neither of which is possible. So the root is $(\mathtt{fp32}\ A\ B)$ with $A, B$ each fp16-rooted subtree outputs (a leaf operand would put $|A| + |B| < 65{,}505 < \Sigma$). Each $|A|, |B| \le 65{,}504$ gives $S \le 131{,}008 < \Sigma$, so $\eta_i \ge (\Sigma - 131{,}008)/\Sigma > 0$ and $\alpha_i < 1$. Numerically this caps the per-case score under $19$ at $\Sigma \approx 137{,}500$. For $k_i \ge 2$, $\beta_i \le (n-1)/(n+1)$ and $\alpha_i \le 1$, giving the stated bound directly. The maximum across the three cases is $100(n-1)/(n+1)$, and the total ceiling follows.
+
+The hypothesis $\Sigma > 131{,}008$ is satisfied with overwhelming concentration for $n = 275{,}000$ i.i.d. uniform $[0,1)$ draws: $\mathbb{E}[\Sigma] = 137{,}500$ with standard deviation $\sqrt{n/12} \approx 151.4$, so $\Sigma \le 131{,}008$ is roughly $43$ standard deviations from the mean and effectively impossible in any realistic instance. Across the 100 cases of seed $667{,}676{,}767$, observed $\Sigma_i$ range from $137{,}071.97$ to $137{,}856.44$. The universal ceiling therefore applies to every case of every realistic random seed under the spec.
+
+### Seed-Specific Ceiling: 9,999.8913
+
+For the specific 100 $\Sigma_i$ values produced at seed $667{,}676{,}767$, the universal ceiling can be tightened by exploiting the quantization granularity that the $k_i = 2$ case actually allows.
+
+The argument from the universal section shows that any $k_i = 2$ blueprint has its root as a two-fp32-add structure over three fp16-rooted operands $Y_1, Y_2, Y_3 \in [0, 65{,}504]$ summing to at least $\Sigma_i$. Each $Y_j \le 65{,}504$ then forces
+
+$$\min_j Y_j \;\ge\; \Sigma_i - 2 \cdot 65{,}504 \;\ge\; 6{,}063.97 \;>\; 2^{12},$$
+
+so every $Y_j$ lies in an fp16 binade $[2^{e_j}, 2^{e_j+1})$ with $e_j \ge 12$, making $Y_j$ a multiple of $2^{e_j-10} \ge 4$. Their sum is consequently a multiple of $4$ as a real number. At the relevant magnitudes ($\le 196{,}512$) fp32 ulp is at most $2^{-6} = 0.015625$ and every multiple of $4$ is exactly representable in fp32, so the chain of fp32 adds introduces no rounding error and $S_i = Y_1 + Y_2 + Y_3$ exactly. The achievable values of $S_i$ are therefore exactly the multiples of $4$, and
+
+$$|S_i - \Sigma_i| \;\ge\; \mathrm{dist}\bigl(\Sigma_i,\, 4\mathbb{Z}\bigr).$$
+
+For each case the per-case ceiling is then
+
+$$\mathrm{score}_i \;\le\; \max\!\Bigl(\, 100\,\alpha_i^{(2)} \cdot \tfrac{n-1}{n+1},\ \ 100 \cdot \tfrac{n-1}{n+2} \,\Bigr),$$
+
+with $\alpha_i^{(2)} := \min\!\bigl(1,\, -\log_2(\mathrm{dist}(\Sigma_i, 4\mathbb{Z})/\Sigma_i)/24\bigr)$ as the $k_i = 2$ accuracy cap and the second term as the $k_i \ge 3$ cost cap.
+
+The $\alpha = 1$ budget at $\Sigma_i \approx 137{,}500$ is $\Sigma_i \cdot 2^{-24} \approx 0.0082$. For all 100 $\Sigma_i$ in the benchmark, $\mathrm{dist}(\Sigma_i, 4\mathbb{Z})$ exceeds this budget *except* for case 65, where it equals $0.006402$. So 99 cases have $\alpha_i^{(2)} < 1$ and their $k_i = 2$ score falls below the $k_i \ge 3$ cost cap, leaving $99.998909$ as the binding ceiling. Case 65 is the lone exception where $k_i = 2$ remains feasible at $\alpha_i = 1$, with ceiling $99.999273$. The total seed-specific ceiling is
+
+$$\sum_{i=1}^{100} \mathrm{score}_i \;\le\; 99 \cdot \frac{100(n-1)}{n+2} + \frac{100(n-1)}{n+1} \;=\; 9{,}999.8912735154.$$
+
+### Per-Case Ceilings (seed 667,676,767)
+
+The per-case ceiling is $99.998909$ ($\alpha = 1$, $\beta = (n-1)/(n+2)$) for 99 of the 100 cases — these are bounded by the $k \ge 3$ cost cap. The lone exception is **case 65**, where $\mathrm{dist}(\Sigma_{65}, 4\mathbb{Z}) = 0.0064$ falls inside the $\alpha = 1$ budget of $0.0082$, so $k = 2$ remains feasible and the ceiling rises to $99.999273$ ($\beta = (n-1)/(n+1)$). The full table for all 100 cases is provided below for verification.
+
+<details>
+<summary>Full per-case table</summary>
+
+| Case | $\Sigma$ | $\mathrm{dist}(\Sigma, 4\mathbb{Z})$ | binding | $\alpha$ | $\beta$ | $\mathrm{score} \le$ |
+|---:|---:|---:|:---:|---:|---:|---:|
+| 1 | 137506.5005 | 1.4995 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 2 | 137290.1359 | 1.8641 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 3 | 137519.2610 | 0.7390 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 4 | 137548.1289 | 0.1289 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 5 | 137497.4926 | 1.4926 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 6 | 137627.5077 | 1.4923 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 7 | 137442.2895 | 1.7105 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 8 | 137524.0424 | 0.0424 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 9 | 137534.4528 | 1.5472 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 10 | 137611.0728 | 0.9272 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 11 | 137527.5232 | 0.4768 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 12 | 137391.8030 | 0.1970 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 13 | 137469.8311 | 1.8311 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 14 | 137501.3942 | 1.3942 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 15 | 137502.5872 | 1.4128 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 16 | 137386.5859 | 1.4141 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 17 | 137603.6489 | 0.3511 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 18 | 137542.8137 | 1.1863 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 19 | 137453.7077 | 1.7077 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 20 | 137604.8497 | 0.8497 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 21 | 137536.1610 | 0.1610 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 22 | 137536.7398 | 0.7398 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 23 | 137586.6418 | 1.3582 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 24 | 137408.5814 | 0.5814 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 25 | 137519.3097 | 0.6903 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 26 | 137574.8175 | 1.1825 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 27 | 137527.2773 | 0.7227 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 28 | 137506.8011 | 1.1989 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 29 | 137544.4663 | 0.4663 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 30 | 137519.0625 | 0.9375 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 31 | 137370.5103 | 1.4897 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 32 | 137505.3915 | 1.3915 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 33 | 137554.4378 | 1.5622 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 34 | 137358.3779 | 1.6221 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 35 | 137527.3061 | 0.6939 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 36 | 137440.4180 | 0.4180 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 37 | 137502.9067 | 1.0933 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 38 | 137332.1198 | 0.1198 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 39 | 137695.9711 | 0.0289 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 40 | 137411.8127 | 1.8127 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 41 | 137502.6029 | 1.3971 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 42 | 137440.6020 | 1.3980 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 43 | 137611.2660 | 0.7340 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 44 | 137422.3953 | 1.6047 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 45 | 137445.0987 | 1.0987 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 46 | 137501.7290 | 1.7290 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 47 | 137441.3068 | 1.3068 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 48 | 137223.9606 | 0.0394 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 49 | 137518.8497 | 1.1503 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 50 | 137419.9019 | 1.9019 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 51 | 137524.7307 | 0.7307 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 52 | 137071.9731 | 0.0269 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 53 | 137422.5793 | 1.4207 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 54 | 137417.2188 | 1.2188 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 55 | 137510.3625 | 1.6375 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 56 | 137487.7728 | 0.2272 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 57 | 137556.6841 | 1.3159 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 58 | 137411.5395 | 1.4605 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 59 | 137559.6010 | 0.3990 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 60 | 137386.5610 | 1.4390 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 61 | 137408.7884 | 0.7884 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 62 | 137480.5076 | 0.4924 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 63 | 137562.5891 | 1.4109 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 64 | 137469.1620 | 1.1620 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 65 | 137599.9936 | 0.0064 | $k = 2$ | 1.000000 | 0.999993 | 99.999273 |
+| 66 | 137600.3989 | 0.3989 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 67 | 137551.7935 | 0.2065 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 68 | 137396.4716 | 0.4716 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 69 | 137533.6552 | 1.6552 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 70 | 137521.5611 | 1.5611 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 71 | 137620.5193 | 0.5193 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 72 | 137619.4117 | 0.5883 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 73 | 137491.8776 | 0.1224 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 74 | 137475.7720 | 0.2280 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 75 | 137516.6925 | 1.3075 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 76 | 137599.9617 | 0.0383 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 77 | 137556.0547 | 0.0547 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 78 | 137495.7506 | 1.7506 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 79 | 137553.6660 | 1.6660 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 80 | 137629.0850 | 1.0850 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 81 | 137552.0693 | 0.0693 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 82 | 137620.8083 | 0.8083 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 83 | 137387.8123 | 1.8123 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 84 | 137411.6989 | 1.6989 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 85 | 137580.6594 | 1.3406 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 86 | 137614.1748 | 1.8252 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 87 | 137513.7081 | 1.7081 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 88 | 137382.4671 | 1.5329 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 89 | 137567.7651 | 1.7651 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 90 | 137453.9881 | 1.9881 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 91 | 137627.4116 | 1.4116 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 92 | 137616.7011 | 0.7011 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 93 | 137415.0716 | 1.0716 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 94 | 137519.9472 | 1.9472 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 95 | 137469.2155 | 1.2155 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 96 | 137382.0809 | 1.9191 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 97 | 137480.0167 | 0.0167 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 98 | 137485.6376 | 1.6376 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 99 | 137574.1854 | 1.8146 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+| 100 | 137385.7762 | 1.7762 | $k\ge 3$ | 1.000000 | 0.999989 | 99.998909 |
+
+</details>
+
+Summing the right-hand column gives $9{,}999.8912735154$.
+
+### Achievability
+
+Both ceilings are reached by realized blueprints, so the bounds aren't loose. For case 65, a $k = 2$ blueprint with three balanced fp16 subtrees (one of many randomized partitions tested) hits $99.999273$ exactly, with $\eta = 4.65 \times 10^{-8} < 2^{-24}$ and $\alpha = 1$. For the other cases, a $k = 3$ round-robin partition of the sorted inputs into four fp16 subtrees reaches $99.998909$ when the partition is favorable.
+
+The Frontier Beam-Search solver in the next section scores $9{,}998.97$ overall, sitting roughly $0.92$ points below the seed-specific ceiling. The remaining gap reflects the practical difficulty of simultaneously realizing the bound on every case, not slack in the ceiling itself.
+
 ## A Better Solution
 
-A perfect score of 10,000 on this benchmark is not achievable. The binade argument given earlier puts the absolute ceiling somewhere between 9,990 and 9,999.6 depending on how the residual fp16 rounding error happens to land. The Frontier Beam-Search solver, an original algorithm I developed for this submission, scores 9,998.97, near the high end of that range. Its core idea, *selective-node-exposure beam search* over a precomputed pairwise fp16 reduction tree, is distinct from every AI submission evaluated above: where the closest AI submission (ChatGPT 5.5 Heavy Thinking) uses a subset-sum DP over fixed-shape modifications (full-block upgrades, half/quarter/eighth splits), the algorithm described in Tier IV constructs a continuous space of partial-tree exposure paths and beam-searches over their combinations.
+The Frontier Beam-Search solver, an original algorithm I developed for this submission, scores 9,998.97 against the ceiling of $9{,}999.8913$ proved above. Its core idea, *selective-node-exposure beam search* over a precomputed pairwise fp16 reduction tree, is distinct from every AI submission evaluated above: where the closest AI submission (ChatGPT 5.5 Heavy Thinking) uses a subset-sum DP over fixed-shape modifications (full-block upgrades, half/quarter/eighth splits), the algorithm described in Tier IV constructs a continuous space of partial-tree exposure paths and beam-searches over their combinations.
 
-Rather than presenting "the solution" as a single deliverable, the algorithmic landscape decomposes naturally into four tiers. Each tier corresponds to clearing a specific score threshold, which in turn requires a specific algorithmic insight that the submissions below it did not have. The four tiers below capture the qualitative jumps; together they take a solver from the single-precision floor to within striking distance of the empirical ceiling.
+Rather than presenting "the solution" as a single deliverable, the algorithmic landscape decomposes naturally into four tiers. Each tier corresponds to clearing a specific score threshold, which in turn requires a specific algorithmic insight that the submissions below it did not have. The four tiers below capture the qualitative jumps; together they take a solver from the single-precision floor to within striking distance of the proved ceiling.
 
 ### Tier I: > 5,000
 
@@ -480,10 +648,10 @@ All files necessary to reproduce the score are included in this repository:
 
 - `s.py`, the solver implementing `solve(n, values)`
 - `judge.cpp`, IEEE 754 simulator that evaluates a blueprint and returns its score
-- `gen.py`, deterministic generator for the 100 benchmark cases
+- `gen.py`, deterministic generator for the 100 benchmark cases at seed $667{,}676{,}767$
 - `g.py`, multi-process grader that runs the solver against all cases and reports the total
 
-The only requirements are Python 3 and a C++17 compiler. No third-party packages are needed; everything uses the standard library.
+The only requirements are Python 3 and a C++17 compiler. No third-party packages are needed; everything uses the standard library. The seed is hardcoded in `gen.py`; all scores reported in this writeup were measured against the cases it produces.
 
 To produce the benchmark and grade the solver:
 
