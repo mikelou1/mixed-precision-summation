@@ -2,7 +2,7 @@
 
 ## Abstract
 
-Floating-point summation is the primitive operation at the core of dot products, matrix multiplication, and numerical solvers, and its numerical behavior is consequential across virtually all of scientific computing [^higham]. A single forward pass of a modern large transformer involves on the order of trillions of floating-point reductions; the choice of precision and ordering across those reductions determines both the final loss curve and the wall-clock cost of training. The IEEE 754 standard [^ieee754] defines three binary formats relevant to this setting: fp64, fp32, and fp16, with unit roundoffs of approximately $10^{-16}$, $10^{-7}$, and $10^{-4}$ respectively, ordered by decreasing numerical fidelity and decreasing memory and compute cost. fp64 is the historical default for numerical stability, but its 64-bit operand width limits parallel occupancy on contemporary hardware. fp16 delivers $4\times$ lower memory footprint than fp64 and substantially greater compute throughput on NVIDIA tensor-core accelerators (see the hardware table in the next section), but rounding error accumulates rapidly and after sufficiently many operations the result is unreliable. Neither format is adequate in isolation, and an optimal blueprint over the space of precision assignments and summation orderings is computationally intractable at the scale scientific workloads demand.
+Floating-point summation is the primitive operation at the core of dot products, matrix multiplication, and numerical solvers, and its numerical behavior is consequential across virtually all of scientific computing [^higham]. The IEEE 754 standard [^ieee754] defines three binary formats relevant to this setting: fp64, fp32, and fp16, with unit roundoffs of approximately $10^{-16}$, $10^{-7}$, and $10^{-4}$ respectively, ordered by decreasing numerical fidelity and decreasing memory and compute cost. fp64 is the historical default for numerical stability, but its 64-bit operand width limits parallel occupancy on contemporary hardware. fp16 delivers $4\times$ lower memory footprint than fp64 and substantially greater compute throughput on NVIDIA tensor-core accelerators (see the hardware table in the next section), but rounding error accumulates rapidly and after sufficiently many operations the result is unreliable. Neither format is adequate in isolation, and an optimal blueprint over the space of precision assignments and summation orderings is computationally intractable at the scale scientific workloads demand.
 
 > [!NOTE]
 > Floating-point summation is the kind of primitive that disappears into a single line of code in every scientific library, and the cost and accuracy of that line are governed by hardware and rounding behavior that almost nobody looks at directly. This work goes beneath that surface in two ways, both of which are the original research contributions of this writeup: (i) a hardware-aligned efficiency metric for mixed-precision summation that exposes the underlying tensor-core throughput ratios as cost weights and caps accuracy at the fp32 mantissa ceiling, so that blueprints can be compared on the axis that actually matters in production; and (ii) the Frontier Beam-Search solver, which scores 9,998.97/10,000 on the benchmark by operating at the bit level beneath IEEE 754, enumerating exposure paths through a precomputed fp16 reduction tree and using diversity-preserving beam search to find combinations of residuals that cancel against the fp32 rounding boundary. The remaining sections (hardware context, AI baselines, tier taxonomy) provide the framing and empirical comparisons that situate these two contributions.
@@ -56,7 +56,7 @@ $$\alpha = \min\!\left(1,\ \max\!\left(0,\ \frac{-\log_2 \eta}{24}\right)\right)
 
 normalised against the 24-bit mantissa of fp32, which is the practical accuracy ceiling for any blueprint operating below fp64. The $\log_2$ scaling is dictated by the IEEE 754 mantissa structure: a blueprint that retains $k$ effective bits has $\eta \approx 2^{-k}$, so a linear function of $-\log_2 \eta$ corresponds linearly to retained precision. A bit-based formulation is necessary because the error regime of fp16-based summations, typically $10^{-6}$ to $10^{-3}$, causes a linear accuracy term to saturate and fail to discriminate between blueprints.
 
-**Why precision above 24 bits is not rewarded.** The clamp $\alpha = \min(1, \cdot)$ at $\eta = 2^{-24}$ is not arbitrary. The cap reflects the practical accuracy ceiling: any blueprint that incurs even one fp32 add cannot, in general, exceed fp32 mantissa precision, since each fp32 cast quantises its operand to 24 bits. A blueprint producing $\eta = 10^{-50}$ is no more useful in a mixed-precision setting than one producing $\eta = 2^{-24}$; both deliver inputs of identical quality to any downstream fp32 computation. The cap also prevents pathological metric values that would otherwise let an all-fp64 blueprint dominate the rank order through accuracy alone. By capping at the fp32 mantissa width, the metric forces algorithms to compete on the operationally meaningful axis: cost to reach the practical accuracy ceiling, not raw error magnitude. This is the same optimisation regime in which mixed-precision training [^micikevicius] and tiled-attention kernels with fp32 accumulators [^flashattention] operate in production: lower-precision storage and multiplies, higher-precision accumulation, calibrated to land just at the accuracy ceiling.
+**Why precision above 24 bits is not rewarded.** The clamp $\alpha = \min(1, \cdot)$ at $\eta = 2^{-24}$ is not arbitrary. The cap reflects the practical accuracy ceiling: any blueprint that incurs even one fp32 add cannot, in general, exceed fp32 mantissa precision, since each fp32 cast quantises its operand to 24 bits. A blueprint producing $\eta = 10^{-50}$ is no more useful in a mixed-precision setting than one producing $\eta = 2^{-24}$; both deliver inputs of identical quality to any downstream fp32 computation. The cap also prevents pathological metric values that would otherwise let an all-fp64 blueprint dominate the rank order through accuracy alone. By capping at the fp32 mantissa width, the metric forces algorithms to compete on the operationally meaningful axis: cost to reach the practical accuracy ceiling, not raw error magnitude. This is the same optimisation regime in which production matrix multiplication operates — the dot-product reductions at the core of climate simulations, fluid dynamics, structural engineering, signal processing, computer graphics, and modern machine learning all use lower-precision storage and multiplies with higher-precision accumulation, calibrated to land just at the accuracy ceiling.
 
 A corollary is that the optimisation problem is properly stated as a constrained minimisation: minimise $C$ subject to $\eta \le 2^{-24}$. Blueprints that drive $\eta$ below this threshold pay additional cost for no marginal reward and are therefore suboptimal by construction. A well-designed solver calibrates its precision allocation to land $\eta$ just below the threshold and stops.
 
@@ -178,6 +178,8 @@ where $\hat{\alpha}_i := \min\!\bigl(1,\, -\log_2(\mathrm{dist}(\Sigma_i, 4\math
 The $\alpha = 1$ budget at $\Sigma_i \approx 137{,}500$ is $\Sigma_i \cdot 2^{-24} \approx 0.0082$. For all 100 $\Sigma_i$ in the benchmark, $\mathrm{dist}(\Sigma_i, 4\mathbb{Z})$ exceeds this budget except for case 65, where it equals $0.006402$. The 99 other cases therefore have $\hat{\alpha}_i < 1$, and their $k_i = 2$ score falls below the $k_i \ge 3$ cost cap of $99.998909$, which becomes the binding ceiling. Case 65 is the one case where $k_i = 2$ remains feasible at $\alpha_i = 1$, with ceiling $99.999273$. The total seed-specific ceiling is
 
 $$\sum_{i=1}^{100} \mathrm{score}_i \;\le\; 99 \cdot \frac{100(n-1)}{n+2} + \frac{100(n-1)}{n+1} \;=\; 9{,}999.8912735154.$$
+
+![Diagram of the 4Z grid argument for case 1 vs case 65](assets/k2_grid.png)
 
 ### Per-Case Ceilings (seed 667,676,767)
 
@@ -413,7 +415,7 @@ Tier III solutions, even at their upper end, implement the subset-sum reframing 
 
 #### Phase 1: Preprocessing
 
-Sort the input by magnitude, fp16-round each value, and handle small-$n$ short-circuits. The whole-input fp64 sum is computed via `math.fsum` (accurate independent of order) to serve as the reference $\Sigma$ for scoring intermediate plans:
+Sort the input by magnitude, fp16-round each value, and handle small-input short-circuits. The whole-input fp64 sum is computed via `math.fsum` (accurate independent of order) to serve as the reference $\Sigma$ for scoring intermediate plans:
 
 ```python
 total = math.fsum(values)
@@ -474,7 +476,7 @@ else:
     bvals = (16, 15, 14)
 ```
 
-For dense uniform input, the three levels $b = 16, 15, 14$ are sufficient; sparse input gets a broader candidate set because density changes which level holds the best $\alpha$-vs-$\beta$ balance. Each level $b$ is also gated by a per-level beam configuration (`group_cap`, `keep`, `beam_cap`, `exact_cap`) that controls how aggressively the search explores at that level.
+For dense uniform input, the three levels $b = 16, 15, 14$ are sufficient; sparse input gets a broader candidate set because density changes which level holds the best accuracy-vs-cost balance. Each level $b$ is also gated by a per-level beam configuration (`group_cap`, `keep`, `beam_cap`, `exact_cap`) that controls how aggressively the search explores at that level.
 
 **Time:** $\le 8$ portfolio configurations, each scaled by the inner search. **Space:** $O(1)$ over the levels.
 
@@ -667,11 +669,7 @@ The grader runs cases in parallel across all available cores and uses `curses` f
 
 [^ieee754]: IEEE Computer Society. *IEEE Standard for Floating-Point Arithmetic*, IEEE Std 754-2019. IEEE, 2019. <https://ieeexplore.ieee.org/document/8766229>
 
-[^higham]: N. J. Higham. *Accuracy and Stability of Numerical Algorithms*, 2nd ed. SIAM, 2002. Chapter 4 covers summation, including the $O(\varepsilon \log n)$ bound for pairwise summation.
-
-[^micikevicius]: P. Micikevicius et al. "Mixed Precision Training." arXiv:1710.03740, 2017. <https://arxiv.org/abs/1710.03740>. The canonical reference for fp16 training with fp32 master weights and loss scaling.
-
-[^flashattention]: T. Dao, D. Y. Fu, S. Ermon, A. Rudra, C. Ré. "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness." NeurIPS 2022. <https://arxiv.org/abs/2205.14135>. The kernel performs softmax in fp32 accumulators while multiplying in lower precision, matching the lower-precision-storage, higher-precision-accumulation pattern described above.
+[^higham]: N. J. Higham. *Accuracy and Stability of Numerical Algorithms*, 2nd ed. SIAM, 2002. Chapter 4 covers summation, including the O(ε log n) bound for pairwise summation.
 
 [^a100]: NVIDIA Corporation. *NVIDIA A100 Tensor Core GPU Datasheet*, 2020. <https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-nvidia-us-2188504-web.pdf>. See also *NVIDIA Ampere Architecture Whitepaper*, 2020. <https://images.nvidia.com/aem-dam/en-zz/Solutions/data-center/nvidia-ampere-architecture-whitepaper.pdf>
 
