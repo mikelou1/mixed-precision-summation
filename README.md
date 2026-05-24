@@ -5,7 +5,7 @@
 Floating-point summation is the primitive operation at the core of dot products, matrix multiplication, and numerical solvers, and its numerical behavior is consequential across virtually all of scientific computing [^higham]. The IEEE 754 standard [^ieee754] defines three binary formats relevant to this setting: fp64, fp32, and fp16, with unit roundoffs of approximately $10^{-16}$, $10^{-7}$, and $10^{-4}$ respectively, ordered by decreasing numerical fidelity and decreasing memory and compute cost. fp64 is the historical default for numerical stability, but its 64-bit operand width limits parallel occupancy on contemporary hardware. fp16 delivers $4\times$ lower memory footprint than fp64 and substantially greater compute throughput on NVIDIA tensor-core accelerators (see the hardware table in the next section), but rounding error accumulates rapidly and after sufficiently many operations the result is unreliable. Neither format is adequate in isolation, and an optimal blueprint over the space of precision assignments and summation orderings is computationally intractable at the scale scientific workloads demand.
 
 > [!NOTE]
-> Floating-point summation is the kind of primitive that disappears into a single line of code in every scientific library, and the cost and accuracy of that line are governed by hardware and rounding behavior that almost nobody looks at directly. This work goes beneath that surface in two ways, both of which are the original research contributions of this writeup: (i) a hardware-aligned efficiency metric for mixed-precision summation that exposes the underlying tensor-core throughput ratios as cost weights and caps accuracy at the fp32 mantissa ceiling, so that blueprints can be compared on the axis that actually matters in production; and (ii) the Frontier Beam-Search solver, which scores 9,998.97/10,000 on the benchmark by operating at the bit level beneath IEEE 754, enumerating exposure paths through a precomputed fp16 reduction tree and using diversity-preserving beam search to find combinations of residuals that cancel against the fp32 rounding boundary. The remaining sections (hardware context, AI baselines, tier taxonomy) provide the framing and empirical comparisons that situate these two contributions.
+> Floating-point summation is the kind of primitive that disappears into a single line of code in every scientific library, and the cost and accuracy of that line are governed by hardware and rounding behavior that almost nobody looks at directly. This work goes beneath that surface in two ways, both of which are the original research contributions of this writeup: (i) a hardware-aligned efficiency metric for mixed-precision summation that exposes the underlying tensor-core throughput ratios as cost weights and caps accuracy at the fp32 mantissa ceiling, so that blueprints can be compared on the axis that actually matters in production; and (ii) two original solvers that operate at the bit level beneath IEEE 754: the Selective-Exposure Beam Search, which scores 9,998.97/10,000 by enumerating exposure paths through a precomputed fp16 reduction tree and using diversity-preserving beam search to find combinations of residuals that cancel against the fp32 rounding boundary, and the Balanced-Bucket Residual Repair solver, which scores 9,999.85/10,000 — within 0.04 of the proved ceiling — by balancing the inputs into fp16 buckets that each land exactly on a power-of-two binade and then repairing the final residual with a handful of raw fp32 leaves. The remaining sections (hardware context, AI baselines, tier taxonomy) provide the framing and empirical comparisons that situate these contributions.
 
 ## Overview
 
@@ -129,7 +129,7 @@ Nine submissions were collected from contemporary language models across two ope
 
 **Observations.** Among Fast submissions, three of the models converged independently on essentially the same approach: sort by magnitude, group into fixed-size fp16 chunks, and combine in fp32. The differences between them came down to the fp32 combination step (flat versus tree versus hierarchical fan-out), accounting for roughly 700 points of spread. The two models that scored zero in Fast mode did so for different reasons. Claude Opus 4.7 Fast reasoned that input values should be bucketed by magnitude before summing in fp16, an approach that is more principled in concept but ignores that fp16's representable maximum is 65,504, which the largest bucket exceeds. DeepSeek V4 Fast produced a syntactically valid solver whose tree-construction code crashed at runtime due to a structural bug.
 
-Under the Thinking condition, the picture changes substantially. ChatGPT 5.5 Heavy Thinking converged on essentially the same algorithmic family as the final Frontier Beam-Search solver in the next section: sorted fp16 blocks of size around 1,000, multi-piece splits for selected blocks (2, 4, or 8 way), a subset-sum dynamic program for choosing which blocks to split, and an fp64 root reduction. Its score of 9,991.78 sits within the saturation regime of the benchmark, roughly seven points below the final Frontier Beam-Search solver. The Claude models found variations on the structure without the error-correction step, scoring near 8,200. DeepSeek V4 Thinking developed an original priority-queue merging approach with precision chosen by subtree size, scoring 7,418.
+Under the Thinking condition, the picture changes substantially. ChatGPT 5.5 Heavy Thinking converged on essentially the same algorithmic family as the Selective-Exposure Beam Search solver in the next section: sorted fp16 blocks of size around 1,000, multi-piece splits for selected blocks (2, 4, or 8 way), a subset-sum dynamic program for choosing which blocks to split, and an fp64 root reduction. Its score of 9,991.78 sits within the saturation regime of the benchmark, roughly seven points below that solver. The Claude models found variations on the structure without the error-correction step, scoring near 8,200. DeepSeek V4 Thinking developed an original priority-queue merging approach with precision chosen by subtree size, scoring 7,418.
 
 The Fast and Thinking score ranges (roughly 7,000 at the top of Fast, roughly 9,990 at the top of Thinking) are not narrow refinements of one another. They represent different regimes of engagement with the problem, and the gap between them is filled almost entirely by empirical testing and revision against the grading harness.
 
@@ -299,11 +299,11 @@ Summing the right-hand column gives $9{,}999.8912735154$.
 
 Each per-case ceiling is individually reachable. For case 65, a $k = 2$ blueprint with three balanced fp16 subtrees realized by a randomized partition attains $99.999273$, with $\eta = 4.65 \times 10^{-8} < 2^{-24}$ and $\alpha = 1$. For any of the other 99 cases, a $k = 3$ partition can in principle attain $99.998909$ when the rounding errors across the fp16 subtrees cancel against the residual.
 
-The total ceiling of $9{,}999.8913$, however, requires this cancellation to occur on all 100 cases simultaneously, which no known method achieves. The Frontier Beam-Search solver in the next section scores $9{,}998.97$, the highest measured here, approximately $0.92$ points below the ceiling. This residual gap is consistent with the difficulty of locating cancellation-perfect partitions across all cases rather than with looseness in the bound.
+The total ceiling of $9{,}999.8913$, however, requires this cancellation to occur on all 100 cases simultaneously. The Selective-Exposure Beam Search solver scores $9{,}998.97$, approximately $0.92$ points below the ceiling. The Balanced-Bucket Residual Repair solver in the next section closes almost all of that remaining gap, scoring $9{,}999.85$ — within $0.04$ of the proved ceiling — by landing the per-bucket residual exactly on a representable boundary rather than searching for it. The small residual gap that remains is consistent with the difficulty of achieving cancellation-perfect partitions on every case rather than with looseness in the bound.
 
 ## A Better Solution
 
-The Frontier Beam-Search solver, an original algorithm I developed for this submission, scores 9,998.97 against the ceiling of $9{,}999.8913$ proved above. Its core idea, *selective-node-exposure beam search* over a precomputed pairwise fp16 reduction tree, is distinct from every AI submission evaluated above: where the closest AI submission (ChatGPT 5.5 Heavy Thinking) uses a subset-sum DP over fixed-shape modifications (full-block upgrades, half/quarter/eighth splits), the algorithm described in Tier IV constructs a continuous space of partial-tree exposure paths and beam-searches over their combinations.
+Two original solvers I developed for this submission sit at the top of the landscape. The Selective-Exposure Beam Search solver scores 9,998.97 against the ceiling of $9{,}999.8913$ proved above; its core idea, *selective-node-exposure beam search* over a precomputed pairwise fp16 reduction tree, is distinct from every AI submission evaluated above, in that where the closest AI submission (ChatGPT 5.5 Heavy Thinking) uses a subset-sum DP over fixed-shape modifications (full-block upgrades, half/quarter/eighth splits), it constructs a continuous space of partial-tree exposure paths and beam-searches over their combinations. The Balanced-Bucket Residual Repair solver scores higher still, at 9,999.85 — within 0.04 of the ceiling — by replacing tree exposure with a construction: it balances the inputs into fp16 buckets that each sum to exactly 2048 (the lower boundary of an exactly-representable fp16 binade), then repairs the final residual with one to three raw fp32 leaves. Both are described below; the beam search anchors Tier IV, and the bucket solver is the highest-scoring method reported in this writeup.
 
 Rather than presenting "the solution" as a single deliverable, the algorithmic landscape decomposes naturally into four tiers. Each tier corresponds to clearing a specific score threshold, which in turn requires a specific algorithmic insight that the submissions below it did not have. The four tiers below capture the qualitative jumps; together they take a solver from the single-precision floor to within striking distance of the proved ceiling.
 
@@ -409,9 +409,11 @@ Reaching the upper end of the Tier III band, near 9,990, requires the subset-sum
 
 ### Tier IV: > 9,995
 
+#### Solution 1: Selective-Exposure Beam Search — 9,998.97
+
 Tier III solutions, even at their upper end, implement the subset-sum reframing with fixed-shape modifications (full block upgrades, half/quarter/eighth splits). Beating this regime requires extending the candidate pool beyond fixed-shape splits into a continuous space of partial-tree exposures, and pairing that with a chooser strong enough to navigate it.
 
-**Insight IV: frontier beam search for selective node exposure.** The algorithm described here is an original contribution of this submission. Construct a precomputed fp16 reduction tree, expose its top level $b$ as a starting set of nodes, and run a beam search that selectively descends into individual nodes to fine-tune the residual error. Each descent step trades one fp16 add for finer-grained control over $E$. The beam keeps the candidate set diverse enough that combinations whose residuals cancel can be discovered on cases where coarser-grained correction misses by a single bit. Unlike the subset-sum DPs found in the strongest AI submissions, which operate over a fixed catalogue of block-level modifications, this search operates over a continuous space of tree-path exposures, which is what allows it to clear Tier IV. The Frontier Beam-Search solver clears Tier IV at 9,998.97. The remainder of this section breaks the algorithm into its concrete phases.
+**Insight IV: selective-exposure beam search over a precomputed fp16 tree.** The algorithm described here is an original contribution of this submission. Construct a precomputed fp16 reduction tree, expose its top level $b$ as a starting set of nodes, and run a beam search that selectively descends into individual nodes to fine-tune the residual error. Each descent step trades one fp16 add for finer-grained control over $E$. The beam keeps the candidate set diverse enough that combinations whose residuals cancel can be discovered on cases where coarser-grained correction misses by a single bit. Unlike the subset-sum DPs found in the strongest AI submissions, which operate over a fixed catalogue of block-level modifications, this search operates over a continuous space of tree-path exposures, which is what allows it to clear Tier IV. The Selective-Exposure Beam Search solver clears Tier IV at 9,998.97. The remainder of this section breaks the algorithm into its concrete phases.
 
 #### Phase 1: Preprocessing
 
@@ -614,13 +616,104 @@ In practice this branch fires on a small minority of cases. The dominant code pa
 
 Aggregate per-case wall-clock time on the benchmark hardware is well within the 3-second limit per case. The dominant cost is the beam combination in Phase 6, scaled by the per-level beam configurations chosen in Phase 4.
 
+#### Solution 2: Balanced-Bucket Residual Repair — 9,999.85
+
+The beam search reaches Tier IV by searching for residual cancellations across a tree of fp16 exposures. The second solver clears the same tier through a different mechanism: rather than searching for a residual that cancels, it constructs the partial sums so that the residual coincides with an exactly representable value by design. It scores 9,999.85, within 0.04 of the proved ceiling of $9{,}999.8913$, and is the highest-scoring method reported in this writeup.
+
+**Insight V: balance the inputs into power-of-two buckets, then repair the residual with raw leaves.** The fp16 binade $[2^{11}, 2^{12}) = [2048, 4096)$ has a representable spacing of $1$, and the value $2048$ lies exactly on its lower boundary, where it is represented without error. If each fp16 bucket is filled so that its rounded total equals exactly $2048$, then every bucket contributes an identical, error-free operand to the outer reduction, and no search over residuals is required: the only remaining error is the gap between $2048q$ (for $q$ full buckets) and the true sum $\Sigma$. This gap is bounded and known in advance, and is absorbed by a single small remainder bucket together with, where necessary, a small number of raw input values added directly in fp32. Whereas the beam search explores a combinatorial space to locate a cancellation, this solver eliminates the search by constraining every full bucket to the same exact constant.
+
+The algorithm has four phases.
+
+##### Phase 1: Target and bucket count
+
+Compute the fp32-rounded reference sum and the number of full buckets $q = \lfloor \Sigma / 2048 \rfloor$. The remainder $\mathrm{rem} = \Sigma - 2048q$ is the mass that the small bucket and raw leaves must account for. Inputs below $n = 1000$ (or with $q < 1$) short-circuit to a sorted fp32 pairwise tree:
+
+```python
+target = _f32(math.fsum(vals))
+q = int(target // 2048.0)
+rem = target - 2048.0 * q
+order = sorted(range(n), key=vals.__getitem__)
+```
+
+**Time:** $O(n \log n)$, dominated by the sort. **Space:** $O(n)$.
+
+##### Phase 2: Heap-balanced bucket fill
+
+Distribute the sorted values across $q$ full buckets (target $2048$ each) plus one small bucket (target $\mathrm{rem}$), assigning each value to whichever bucket is currently furthest below its target. A min-heap keyed on the fill ratio $s_j / \mathrm{target}_j$ makes each assignment $O(\log q)$. Distributing by ratio rather than by absolute sum maintains a similar value distribution across buckets, which prevents any single bucket from accumulating only small-magnitude values and stalling under fp16 absorption:
+
+```python
+heap = [(0.0, j) for j in range(m)]
+for idx in order:
+    _, j = heapq.heappop(heap)
+    groups[j].append(idx)
+    sums[j] += vals[idx]
+    heapq.heappush(heap, (sums[j] / targets[j], j))
+```
+
+The small bucket's target cannot be fixed exactly in advance, because the ascending fp16 sum exhibits a predictable upward drift. The solver evaluates approximately fifteen candidate bias values centred on $\mathrm{rem}/80$ and retains the fill whose fp16 small-bucket output falls just at or below $\mathrm{rem}$:
+
+```python
+center = int(round(rem / 80.0))
+biases = set(range(0, 4))
+for d in range(-5, 6):
+    b = center + d
+    if b >= 0:
+        biases.add(b)
+```
+
+**Time:** $O(n \log q)$ per fill, over a constant number ($\le 15$) of bias candidates; $q \le \Sigma / 2048 \approx 67$, so $\log q$ is bounded by a small constant. **Space:** $O(n)$.
+
+##### Phase 3: Residual repair with raw leaves
+
+After balancing, the fp32 combination of all bucket totals may still miss $\Sigma$ by a residual $\delta$ smaller than one fp32 bin ($0.0078125$ at this magnitude). The solver closes that gap by pulling one, two, or three raw input values out of their buckets and adding them directly at the fp32 root, where they are not subject to fp16 rounding. The number of leaves needed is chosen by the size of $\delta$:
+
+```python
+if   0.0 <= delta < 1.0: raws = _find_one_raw(...)
+elif 0.0 <= delta < 2.0: raws = _find_two_raw(...)
+elif 0.0 <= delta < 3.0: raws = _find_three_raw(...)
+```
+
+Each candidate leaf is validated before use: its removal must leave the originating bucket still summing to exactly $2048$ under fp16, preserving the property on which the construction depends. The one-leaf search scans a magnitude window (located by binary search) around $\delta$; the two- and three-leaf searches use bounded two-pointer sweeps. All candidate counts are capped by constants, so the phase is $O(n)$ in the worst case, dominated by construction of the windowed candidate lists.
+
+**Time:** $O(n)$ worst case, bounded candidate counts. **Space:** $O(n)$.
+
+##### Phase 4: Blueprint assembly
+
+Emit each full bucket (minus any raw leaves pulled from it) as an fp16 chunk, grouping at most 31 chunks per fp16 parent to keep the parent's running total below the fp16 overflow point of $32 \times 2048 = 65{,}536$. The small bucket is emitted likewise, and the raw leaves are attached as direct children of the fp32 root:
+
+```python
+for i in range(0, len(chunk_exprs), 31):
+    block = chunk_exprs[i:i + 31]
+    full_children.append("(fp16 " + " ".join(block) + ")")
+root = full_children + ([small_expr] if small_expr else []) + [str(i + 1) for i in raws]
+return "(fp32 " + " ".join(root) + ")"
+```
+
+**Time:** $O(n)$. **Space:** $O(n)$.
+
+##### Overall complexity
+
+| Phase | Time | Space |
+|---|---|---|
+| Target and bucket count (incl. sort) | $O(n \log n)$ | $O(n)$ |
+| Heap-balanced bucket fill ($\le 15$ biases) | $O(n \log q)$ | $O(n)$ |
+| Residual repair with raw leaves | $O(n)$ | $O(n)$ |
+| Blueprint assembly | $O(n)$ | $O(n)$ |
+
+The solver is $O(n \log n)$ overall, bounded by the initial magnitude sort; every other phase is linear or sub-linear in $n$, since the bucket count $q$ is bounded by the sum magnitude rather than by $n$. This matches the asymptotic class of the beam search. Aggregate per-case wall-clock time is within the 3-second limit.
+
+##### Comparison with the beam-search solver
+
+Both solvers clear Tier IV; the bucket solver scores 0.88 points higher. The distinction is structural. The beam search must locate a combination of tree-path exposures whose residuals cancel to within an fp32 bin, and on a subset of cases the nearest achievable combination is off by one bit. The bucket solver does not perform this search: constraining every full bucket to the exact constant $2048$ guarantees that the only residual is the bounded gap between $2048q$ and $\Sigma$, which the remainder bucket and at most three raw fp32 leaves resolve directly. The bucket solver is, however, specialised to the near-uniform $[0,1)$ regime of this benchmark, in which $q$ buckets of $2048$ partition the total mass cleanly; the beam search applies to a broader class of input distributions.
+
 ### Per-tier comparison table
 
 The chart below shows which tiers each hand-tested baseline cleared. AI submission results appear in their own table in the previous section. A filled cell indicates that the baseline's total score met the threshold for that tier.
 
 | Baseline | Score | Tier I (>5,000) | Tier II (>7,000) | Tier III (>7,500) | Tier IV (>9,995) |
 |---|---|:---:|:---:|:---:|:---:|
-| Frontier Beam-Search | 9,998.97 | ✓ | ✓ | ✓ | ✓ |
+| Balanced-Bucket Residual Repair | 9,999.85 | ✓ | ✓ | ✓ | ✓ |
+| Selective-Exposure Beam Search | 9,998.97 | ✓ | ✓ | ✓ | ✓ |
 | [Sorted, chunks=12, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks12_fp32_tree.py) | 7,739.31 | ✓ | ✓ | ✓ | |
 | [Sorted, adaptive chunk by mean, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_adaptive_chunk_fp32_tree.py) | 7,672.71 | ✓ | ✓ | ✓ | |
 | [Sorted, chunks=16, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks16_fp32_tree.py) | 7,554.19 | ✓ | ✓ | ✓ | |
@@ -642,16 +735,17 @@ The chart below shows which tiers each hand-tested baseline cleared. AI submissi
 | [All-fp16 linear](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/all_fp16_linear.py) | 9.02 | | | | |
 | [All-fp16 sorted pairwise](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/all_fp16_sorted_pairwise.py) | 0.00 | | | | |
 
-Among the hand-tested baselines, only the Frontier Beam-Search solver clears Tier IV. A small number of moderately-tuned baselines cross Tier III. The remainder cluster in Tier II or below, where the no-thinking AI submissions also converged. The wide spread within each tier illustrates how parameter choices that look minor (block size, fp32 reduction shape, sort vs. no-sort) translate into substantial score differences across the lower regime, while parameter tuning alone cannot reach Tier IV.
+Among the hand-tested baselines, only the two solvers of the previous section — Balanced-Bucket Residual Repair and Selective-Exposure Beam Search — clear Tier IV. A small number of moderately-tuned baselines cross Tier III. The remainder cluster in Tier II or below, where the no-thinking AI submissions also converged. The wide spread within each tier illustrates how parameter choices that look minor (block size, fp32 reduction shape, sort vs. no-sort) translate into substantial score differences across the lower regime, while parameter tuning alone cannot reach Tier IV.
 
 ## Reproduce Results
 
 All files necessary to reproduce the score are included in this repository:
 
-- `s.py`, the solver implementing `solve(n, values)`
+- `sn.py`, the Balanced-Bucket Residual Repair solver (9,999.85, the highest score reported here)
+- `s.py`, the Selective-Exposure Beam Search solver (9,998.97)
 - `judge.cpp`, IEEE 754 simulator that evaluates a blueprint and returns its score
 - `gen.py`, deterministic generator for the 100 benchmark cases at seed $667{,}676{,}767$
-- `g.py`, multi-process grader that runs the solver against all cases and reports the total
+- `g.py`, multi-process grader that runs a solver against all cases and reports the total
 
 The only requirements are Python 3 and a C++17 compiler. No third-party packages are needed; everything uses the standard library. The seed is hardcoded in `gen.py`; all scores reported in this writeup were measured against the cases it produces.
 
@@ -660,7 +754,7 @@ To produce the benchmark and grade the solver:
 ```bash
 g++ -std=c++17 -O2 -o judge judge.cpp
 python3 gen.py
-python3 g.py s.py
+python3 g.py sn.py
 ```
 
 The grader runs cases in parallel across all available cores and uses `curses` for its progress display, so a Unix-like terminal (macOS or Linux) is recommended. Wall-clock runtime on a typical multi-core machine is roughly one to two minutes. The total score is printed to stdout on exit.
