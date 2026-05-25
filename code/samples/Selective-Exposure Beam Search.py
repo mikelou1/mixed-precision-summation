@@ -1,4 +1,4 @@
-# Overall time complexity: log-linear,o(n log n)
+# Overall time complexity: log-linear, o(n log n)
 
 import math
 import struct
