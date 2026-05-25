@@ -1,0 +1,453 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Step 1: Adding numbers</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css">
+<style>
+  body { font-family: monospace; background: #f7f8fa; color: #2c2c2a; max-width: 760px; margin: 0 auto; padding: 24px; line-height: 1.55; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 17px; margin-top: 48px; }
+  a { color: #1E7FB8; }
+  .gray { color: #8a8f98; }
+  .navy { color: #0B3B6E; }
+  .mid { color: #1E7FB8; }
+  .red { color: #9e3a1c; }
+  .green { color: #2f7d32; }
+  .fp16 { color: #4CB5D6; }
+  .fp32 { color: #1E7FB8; }
+  .fp64 { color: #0B3B6E; }
+  .box { border: 1px solid #b4b2a9; padding: 14px; margin: 12px 0; }
+  button { font-family: inherit; font-size: 14px; cursor: pointer; padding: 6px 10px; border: 1px solid #b4b2a9; background: none; }
+  button:hover { border-color: #1E7FB8; }
+  input[type=text] { font-family: inherit; font-size: 15px; width: 12ch; padding: 4px; }
+  .big { font-size: 18px; }
+  pre[class*="language-"] { margin: 0; padding: 12px; font-size: 14px; background: #fbfbf9; border: 1px solid #b4b2a9; }
+  .runbar { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+  .out { border-left: 3px solid #b4b2a9; padding: 6px 12px; margin-top: 8px; min-height: 1.4em; white-space: pre; }
+  .hidden { display: none; }
+  .sum { font-size: 20px; line-height: 1.4; display: inline-block; text-align: right; }
+  .sum .op { display: block; }
+  .sum .plus { position: relative; }
+  .sum .plus::before { content: "+"; position: absolute; left: -1.6em; }
+  .sum .ruleline { border-top: 2px solid #2c2c2a; margin-top: 4px; height: 2px; line-height: 0; font-size: 0; }
+  table.bits { border-collapse: collapse; width: 100%; font-size: 15px; }
+  table.bits td, table.bits th { padding: 6px 8px; text-align: left; border-bottom: 1px solid #e3e1d8; }
+  .prec-rows { font-size: 20px; line-height: 2; }
+  .prec-row { display: flex; align-items: baseline; gap: 14px; }
+  .prec-row .lbl { width: 4ch; }
+  .digits { white-space: pre; }
+  .digits .need { border-right: 2px solid #9e3a1c; padding-right: 1px; margin-right: 1px; }
+</style>
+</head>
+<body>
+
+<h1>First, just add some numbers</h1>
+
+<h2>Add these by hand</h2>
+<p>Line them up, add them, and type the total. Press Enter to check.</p>
+
+<div class="box">
+  <div class="sum" id="h_sum"></div>
+  <p style="margin-top:16px">total: <input type="text" id="h_in" placeholder="?"> <button onclick="checkHand()">check</button></p>
+  <p id="h_msg" class="gray">&nbsp;</p>
+</div>
+
+<div id="py_block" class="hidden">
+<h2>Now let a program do it</h2>
+<p>The same sum in Python, using <span class="navy">Decimal</span>, a mode that keeps every digit, however many it takes. Press run.</p>
+
+<div class="box">
+<pre><code class="language-python" id="py_code"></code></pre>
+  <div class="runbar">
+    <button onclick="runPy()">&#9654; run</button>
+    <span class="gray">(adds them keeping every digit)</span>
+  </div>
+  <div class="out gray" id="py_out">&nbsp;</div>
+</div>
+</div>
+
+<div id="fp_block" class="hidden">
+<h2>But computers do not keep every digit</h2>
+<p>To stay fast, each number gets a fixed amount of space, a fixed digit budget. The three common sizes come from the <a href="https://ieeexplore.ieee.org/document/8766229" target="_blank" rel="noopener">IEEE&nbsp;754 standard</a>. Same sum, each size:</p>
+
+<div class="box">
+  <div class="prec-rows" id="prec_rows"></div>
+  <p class="gray" style="margin-top:14px">The <span style="color:#9e3a1c">line</span> marks how many digits we actually need here. Left of it is enough. fp16 runs out before reaching it; fp32 and fp64 have digits to spare.</p>
+</div>
+</div>
+
+<div id="cost_block" class="hidden">
+<h2>Bigger size costs more</h2>
+<p>More digits means more work for the chip. Roughly, one fp32 add costs as much as two fp16 adds, and one fp64 add costs as much as eight.</p>
+<div class="box">
+  <div class="prec-rows">
+    <div class="prec-row"><span class="lbl fp16">fp16</span><span>cost 1 &nbsp;<span class="gray">cheapest, fewest digits</span></span></div>
+    <div class="prec-row"><span class="lbl fp32">fp32</span><span>cost 2 &nbsp;<span class="gray">2&times; an fp16 add</span></span></div>
+    <div class="prec-row"><span class="lbl fp64">fp64</span><span>cost 8 &nbsp;<span class="gray">8&times; an fp16 add</span></span></div>
+  </div>
+</div>
+<p>So you want the answer accurate <em>and</em> cheap. Those pull against each other. The score rolls both into one number:</p>
+<div class="box">
+  <p class="big">score = 100 &times; <span class="navy">how accurate</span> &times; <span class="mid">how cheap</span></p>
+  <p class="gray" style="margin-top:10px">
+    <span class="navy">how accurate</span>: 1.0 if you hit the true total, lower as you drift off.<br>
+    <span class="mid">how cheap</span>: more adds for less cost scores higher. All-fp64 is accurate but its cost drags this down.
+  </p>
+</div>
+</div>
+
+<div id="play_block" class="hidden">
+<h2>Your turn: balance six numbers</h2>
+<p>Pick a size, then click two values to add them. The result becomes a new value. Keep going until one is left. Stay accurate while spending as little as possible.</p>
+<div class="box">
+  <div style="margin-bottom:10px">
+    size for the next add:
+    <button class="psel fp16" data-p="16" onclick="setPrec(16)">fp16</button>
+    <button class="psel fp32" data-p="32" onclick="setPrec(32)">fp32</button>
+    <button class="psel fp64" data-p="64" onclick="setPrec(64)">fp64</button>
+    <span class="gray">&nbsp; cost: fp16=1, fp32=2, fp64=8</span>
+  </div>
+  <div id="play_ops" style="margin:14px 0"></div>
+  <div>
+    <button onclick="undoPlay()">undo</button>
+    <button onclick="resetPlay()">reset</button>
+  </div>
+  <p style="margin-top:14px">
+    result: <span class="big mid" id="play_acc">--</span>
+    &nbsp; true: <span class="navy" id="play_true"></span>
+    &nbsp; <span class="red">off by: <span id="play_err">--</span></span>
+    &nbsp; cost: <span id="play_cost">0</span>
+    &nbsp; score: <span class="big navy" id="play_score">--</span> / 100
+  </p>
+</div>
+
+<div class="box hidden" id="ident_block" style="border-color:#0B3B6E">
+  <p>How would your strategy score against actual solvers?</p>
+  <p id="ident_out" class="gray"></p>
+</div>
+
+<p class="gray">Best possible on these six: <span class="navy" id="play_best">--</span> / 100.</p>
+<div class="box" id="best_reveal">
+  <p>The winning blueprint: <span class="navy" id="best_tree">--</span></p>
+  <p class="gray">The trick: add similar-sized numbers together first in cheap fp16, where they barely round. The four small numbers become 11, the two big ones become 8000, both exact in fp16. Only the final add mixes a big total with a small one, so only that one add needs fp32. One careful add instead of five.</p>
+</div>
+
+<h2>Or type a blueprint</h2>
+<p class="gray">Use the value numbers 1 to 6, e.g. <span class="navy">(fp32 (fp16 1 2 3 4) 5 6)</span>. Each number must appear once.</p>
+<input type="text" id="bp_in" placeholder="(fp32 (fp16 1 2 3 4) 5 6)" size="40" style="width:38ch">
+<button onclick="scoreBP()">score it</button>
+<p id="bp_out">&nbsp;</p>
+
+<div class="box" style="border-color:#0B3B6E">
+  <p>This is just six numbers. The real problem has <span class="navy">275,000</span>.</p>
+  <p class="gray">With that many, the running total stays small for almost the entire run, so the vast majority of adds can be fp16 and only a tiny tail needs fp32. A far smaller fraction of expensive adds means the cost barely rises while accuracy holds, so the score on the full 275,000 numbers ends up much higher than anything you can reach on just six.</p>
+</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+<script>
+const NUMS = [100.1, 50.2, 25.05];
+const TRUE = 175.35;
+
+(function(){
+  const wrap = document.getElementById("h_sum");
+  const decs = NUMS.map(n => (n.toString().split(".")[1]||"").length);
+  const maxDec = Math.max(...decs);
+  NUMS.forEach((n,i)=>{
+    const row = document.createElement("span");
+    row.className = "op" + (i>0 ? " plus" : "");
+    row.textContent = n.toFixed(maxDec);
+    wrap.appendChild(row);
+  });
+  const rule = document.createElement("span");
+  rule.className = "op ruleline";
+  rule.innerHTML = "&nbsp;";
+  wrap.appendChild(rule);
+})();
+
+const code =
+`from decimal import Decimal
+
+nums = [${NUMS.map(n=>'Decimal("'+n+'")').join(", ")}]
+
+total = Decimal("0")
+for x in nums:
+    total = total + x
+
+print(total)`;
+const codeEl = document.getElementById("py_code");
+codeEl.textContent = code;
+if (window.Prism) Prism.highlightElement(codeEl);
+
+function reveal(id){ document.getElementById(id).classList.remove("hidden"); }
+
+function checkHand(){
+  const v = parseFloat(document.getElementById("h_in").value);
+  const msg = document.getElementById("h_msg");
+  if (isNaN(v)) { msg.innerHTML = '<span class="gray">type a number first</span>'; return; }
+  if (Math.abs(v - TRUE) < 1e-9) {
+    msg.innerHTML = `<span class="green">right, it is ${TRUE}. Now watch a program do the same.</span>`;
+  } else {
+    msg.innerHTML = `<span class="red">not quite, the total is ${TRUE}.</span> <span class="gray">scroll on either way.</span>`;
+  }
+  reveal("py_block");
+}
+document.getElementById("h_in").addEventListener("keydown", e=>{
+  if (e.key === "Enter") checkHand();
+});
+
+function runPy(){
+  const out = document.getElementById("py_out");
+  out.classList.remove("gray");
+  const raw = NUMS.reduce((a,b)=>a+b,0);
+  const maxDec = Math.max(...NUMS.map(n=>(n.toString().split(".")[1]||"").length));
+  out.textContent = parseFloat(raw.toFixed(maxDec)).toString();
+  reveal("fp_block");
+  fillBits();
+  reveal("cost_block");
+  reveal("play_block");
+  initPlay();
+}
+
+const dv = new DataView(new ArrayBuffer(8));
+function f32(x){ dv.setFloat32(0,x); return dv.getFloat32(0); }
+function f16poly(x){
+  const f=f32(x); dv.setFloat32(0,f); const u=dv.getUint32(0);
+  const s=u>>>31,e=(u>>>23)&0xFF,m=u&0x7FFFFF;
+  if(e===0xFF)return f; let e16=e-127+15;
+  if(e16>=31)return s?-Infinity:Infinity; if(e16<=0)return s?-0:0;
+  let m16=m>>13,rb=(m>>12)&1,st=m&0xFFF;
+  if(rb&&(st||(m16&1))){m16++;if(m16>=0x400){m16=0;e16++;}}
+  if(e16>=31)return s?-Infinity:Infinity;
+  return (s?-1:1)*(1+m16/1024)*Math.pow(2,e16-15);
+}
+const f16=f16poly, cast=(x,p)=>p===16?f16(x):p===32?f32(x):x;
+function sumP(p){let a=cast(NUMS[0],p);for(let i=1;i<NUMS.length;i++)a=cast(a+cast(NUMS[i],p),p);return a;}
+const NEED_SIG = 5;
+const CHAR_W = 12;
+
+function fillBits(){
+  const rows = document.getElementById("prec_rows");
+  rows.innerHTML = "";
+  [64,32,16].forEach(p=>{
+    const r = sumP(p);
+    const rStr = r.toPrecision(10);
+    let sig=0, cut=rStr.length;
+    for(let k=0;k<rStr.length;k++){
+      if(/[0-9]/.test(rStr[k])){ sig++; if(sig===NEED_SIG){ cut=k+1; break; } }
+    }
+    const row = document.createElement("div");
+    row.className = "prec-row";
+    const cls = p===64?"fp64":p===32?"fp32":"fp16";
+    row.innerHTML =
+      `<span class="lbl ${cls}">fp${p}</span>`+
+      `<span class="digits"><span class="need">${rStr.slice(0,cut)}</span>${rStr.slice(cut)}</span>`;
+    rows.appendChild(row);
+  });
+}
+
+const PLAY = [1.1, 2.2, 3.3, 4.4, 5000, 3000];
+const PLAY_TRUE = PLAY.reduce((a,b)=>a+b,0);
+const OPCOST = {16:1, 32:2, 64:8};
+let pprec = 16;
+let pnodes = [];
+let psel = [];
+let phist = [];
+
+function freshNodes(){
+  return PLAY.map((v,i)=>({val:v, label:(i+1).toString(), subcost:0}));
+}
+function setPrec(p){
+  pprec = p;
+  document.querySelectorAll(".psel").forEach(b=>{
+    const on = +b.dataset.p === p;
+    b.style.borderColor = on ? "#1E7FB8" : "#b4b2a9";
+    b.style.borderWidth = on ? "2px" : "1px";
+    b.style.fontWeight = on ? "700" : "400";
+  });
+}
+function scorePlay(val, cost){
+  const eta = Math.abs(val-PLAY_TRUE)/(PLAY_TRUE+1e-10);
+  const alpha = eta===0 ? 1 : Math.max(0, Math.min(1, -Math.log2(eta)/24));
+  const beta = (PLAY.length-1)/cost;
+  return 100*alpha*beta;
+}
+function totalCost(){ let c=0; pnodes.forEach(n=>c+=n.subcost||0); return c; }
+
+function initPlay(){
+  document.getElementById("play_true").textContent = PLAY_TRUE.toFixed(2);
+  setPrec(16);
+  resetPlay();
+  const best = bestPlay();
+  document.getElementById("play_best").textContent = best.score.toFixed(1);
+  document.getElementById("best_tree").textContent = best.label;
+}
+function resetPlay(){ pnodes = freshNodes(); psel = []; phist = []; renderPlay(); }
+function undoPlay(){ if(!phist.length) return; const s=phist.pop(); pnodes=s.nodes; psel=s.sel; renderPlay(); }
+
+function clickNode(i){
+  if(psel.includes(i)){ psel=psel.filter(x=>x!==i); renderPlay(); return; }
+  if(psel.length<2) psel.push(i);
+  if(psel.length===2) combinePlay();
+  else renderPlay();
+}
+function combinePlay(){
+  phist.push({nodes:JSON.parse(JSON.stringify(pnodes)), sel:[]});
+  const [i,j]=psel;
+  const a=pnodes[i], b=pnodes[j];
+  let acc=cast(a.val,pprec);
+  acc=cast(acc+cast(b.val,pprec),pprec);
+  const pname={16:"fp16",32:"fp32",64:"fp64"}[pprec];
+  const steps=(a.steps||[]).concat(b.steps||[], [{prec:pprec, m1:Math.abs(a.val), m2:Math.abs(b.val)}]);
+  const node={val:acc, label:`(${pname} ${a.label} ${b.label})`,
+              subcost:(a.subcost||0)+(b.subcost||0)+OPCOST[pprec],
+              steps};
+  const keep=pnodes.filter((_,k)=>k!==i&&k!==j);
+  keep.push(node);
+  pnodes=keep; psel=[];
+  renderPlay();
+}
+
+function renderPlay(){
+  const cont=document.getElementById("play_ops"); cont.innerHTML="";
+  pnodes.forEach((nd,i)=>{
+    const d=document.createElement("span");
+    const sel=psel.includes(i);
+    d.style.cssText="display:inline-block; cursor:pointer; padding:8px 10px; margin:4px; border:1px solid "+(sel?"#1E7FB8":"#b4b2a9")+";"+(sel?"border-width:2px;":"");
+    d.innerHTML = `${nd.label.length>16?"(\u2026)":nd.label} <span class="gray">${nd.val.toFixed(2)}</span>`;
+    d.onclick=()=>clickNode(i);
+    cont.appendChild(d);
+  });
+  if(pnodes.length===1){
+    const v=pnodes[0].val, cost=totalCost();
+    document.getElementById("play_acc").textContent=v.toFixed(2);
+    document.getElementById("play_err").textContent=Math.abs(v-PLAY_TRUE).toFixed(2);
+    document.getElementById("play_cost").textContent=cost;
+    document.getElementById("play_score").textContent=scorePlay(v,cost).toFixed(1);
+    identifyStrategy(pnodes[0].steps||[]);
+    document.getElementById("ident_block").classList.remove("hidden");
+  } else {
+    document.getElementById("play_acc").textContent="--";
+    document.getElementById("play_err").textContent="--";
+    document.getElementById("play_cost").textContent=totalCost();
+    document.getElementById("play_score").textContent="--";
+    document.getElementById("ident_block").classList.add("hidden");
+  }
+}
+
+function identifyStrategy(steps){
+  const out=document.getElementById("ident_out");
+  const precs=steps.map(s=>s.prec);
+  const all16=precs.every(p=>p===16);
+  const all32=precs.every(p=>p===32);
+  const all64=precs.every(p=>p===64);
+  const ratio=s=>{const hi=Math.max(s.m1,s.m2), lo=Math.min(s.m1,s.m2)+1e-12; return hi/lo;};
+  const fp16OnMixed=steps.some(s=>s.prec===16 && ratio(s)>100);
+  const fp32Count=precs.filter(p=>p===32).length;
+  const fp64Count=precs.filter(p=>p===64).length;
+  const carefulMix = !all16 && !all32 && !all64 && !fp16OnMixed && (fp32Count+fp64Count)<=2;
+
+  let name, reason;
+  if(all64){
+    name="brute-force fp64";
+    reason="Every add in fp64. Always accurate, but the cost is huge, so the score suffers.";
+  } else if(all32){
+    name="play-it-safe fp32";
+    reason="Every add in fp32. Accurate, but you pay double on adds that fp16 could have handled.";
+  } else if(fp16OnMixed){
+    name="risky mixing";
+    reason="You used fp16 on an add that combined a large value with a small one, where the small digits get lost. Save fp32 for those adds and keep fp16 for similar-sized ones.";
+  } else if(all16){
+    name="all-in fp16";
+    reason="Every add in fp16, and each one combined similar-sized values, so little was lost. Cheap and surprisingly accurate here.";
+  } else if(carefulMix){
+    name="precision-aware mixing";
+    reason="You kept similar-sized adds in cheap fp16 and saved fp32 for the adds that mix large and small. That is what the strong solvers do.";
+  } else {
+    name=null;
+  }
+
+  if(name){
+    out.innerHTML = `Your strategy was probably <span class="navy">${name}</span>.<br><span class="gray">${reason}</span>`;
+  } else {
+    out.innerHTML = `<span class="navy">We couldn't identify your strategy!</span><br><span class="gray">It does not match a common pattern. That is not necessarily bad, unusual mixes sometimes score well.</span>`;
+  }
+}
+
+function bestPlay(){
+  let best=-1, bestLabel="";
+  const leaves=PLAY.map((v,i)=>({val:v, lbl:(i+1).toString()}));
+  function dfs(list, cost){
+    if(cost>50) return;
+    if(list.length===1){
+      const s=scorePlay(list[0].val, cost);
+      if(s>best){ best=s; bestLabel=list[0].lbl; }
+      return;
+    }
+    for(let i=0;i<list.length;i++)for(let j=i+1;j<list.length;j++)for(const p of [16,32,64]){
+      let acc=cast(list[i].val,p); acc=cast(acc+cast(list[j].val,p),p);
+      const pn={16:"fp16",32:"fp32",64:"fp64"}[p];
+      const next=list.filter((_,k)=>k!==i&&k!==j);
+      next.push({val:acc, lbl:`(${pn} ${list[i].lbl} ${list[j].lbl})`});
+      dfs(next, cost+OPCOST[p]);
+    }
+  }
+  dfs(leaves,0);
+  return {score:best, label:bestLabel};
+}
+
+function scoreBP(){
+  const s=document.getElementById("bp_in").value.trim();
+  const out=document.getElementById("bp_out");
+  try{
+    const {val,a16,a32,a64,leaves}=parseBP(s);
+    if(leaves.size!==PLAY.length || [...leaves].some(x=>x<1||x>PLAY.length))
+      throw "use each value 1 to "+PLAY.length+" exactly once";
+    const cost=a16+2*a32+8*a64;
+    const sc=scorePlay(val,cost);
+    out.innerHTML =
+      `value = <span class="mid">${val.toFixed(2)}</span>, off by <span class="red">${Math.abs(val-PLAY_TRUE).toFixed(2)}</span>, cost ${cost}, score <span class="navy">${sc.toFixed(1)}</span> / 100`;
+  }catch(e){
+    out.innerHTML=`<span class="red">invalid: ${e}</span>`;
+  }
+}
+function parseBP(s){
+  let i=0;
+  const leaves=new Set(); let a16=0,a32=0,a64=0;
+  function skip(){ while(i<s.length&&/\s/.test(s[i])) i++; }
+  function node(){
+    skip();
+    if(s[i]==="("){
+      i++; skip();
+      let pm=""; while(i<s.length&&/[a-z0-9]/.test(s[i])) pm+=s[i++];
+      const p = pm==="fp16"?16:pm==="fp32"?32:pm==="fp64"?64:null;
+      if(p===null) throw "bad size '"+pm+"'";
+      const kids=[];
+      while(true){ skip(); if(s[i]===")"){i++;break;} if(i>=s.length) throw "missing )"; kids.push(node()); }
+      if(kids.length<2) throw "each group needs at least 2 values";
+      if(p===16)a16+=kids.length-1; else if(p===32)a32+=kids.length-1; else a64+=kids.length-1;
+      let acc=cast(kids[0],p);
+      for(let k=1;k<kids.length;k++) acc=cast(acc+cast(kids[k],p),p);
+      return acc;
+    } else {
+      let num=""; while(i<s.length&&/[0-9]/.test(s[i])) num+=s[i++];
+      if(!num) throw "expected a value number near position "+i;
+      const idx=parseInt(num,10);
+      if(leaves.has(idx)) throw "value "+idx+" used twice";
+      leaves.add(idx);
+      return PLAY[idx-1];
+    }
+  }
+  const v=node(); skip(); if(i<s.length) throw "extra text after the blueprint";
+  return {val:v,a16,a32,a64,leaves};
+}
+document.getElementById("bp_in").addEventListener("keydown", e=>{
+  if(e.key==="Enter") scoreBP();
+});
+</script>
+</body>
+</html>
