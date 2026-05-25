@@ -1,3 +1,5 @@
+# Overall time complexity: log-linear,o(n log n)
+
 import math
 import struct
 from typing import List
@@ -30,7 +32,7 @@ def _f32_pair(vals):
         vals = nxt
     return vals[0] if vals else 0.0
 
-def _score_from_out(out, total, n, groups):
+def _score_from_out(out,total,n,groups):
     if groups <= 0:
         return -1.0
     C = (n - groups) + 2 * (groups - 1)
@@ -45,11 +47,11 @@ def _score_from_out(out, total, n, groups):
             a = 1.0
     return a * ((n - 1) / C)
 
-def _eval_nodes(levels, nodes, total, n, has_zero=False):
+def _eval_nodes(levels,nodes,total,n,has_zero=False):
     vals = [0.0] if has_zero else []
-    vals.extend(levels[l][i] for l, i in nodes)
+    vals.extend(levels[l][i] for l,i in nodes)
     out = _f32_pair(vals)
-    return _score_from_out(out, total, n, len(vals)), out
+    return _score_from_out(out,total,n,len(vals)),out
 
 def _half_list(values):
     L = len(values)
@@ -70,14 +72,14 @@ def _half_list(values):
                 app(math.inf)
         return out
 
-def _build_levels(hv, max_b):
+def _build_levels(hv,max_b):
     levels = [hv]
     cur = hv
     for _ in range(max_b):
         L = len(cur)
         m = L & ~1
         if m:
-            sums = [cur[i] + cur[i + 1] for i in range(0, m, 2)]
+            sums = [cur[i] + cur[i + 1] for i in range(0,m,2)]
             nxt = _half_list(sums)
         else:
             nxt = []
@@ -87,21 +89,21 @@ def _build_levels(hv, max_b):
         cur = nxt
     return levels
 
-def _canonical(levels, l, i):
+def _canonical(levels,l,i):
     while l > 0:
         ci = i + i
         if ci + 1 < len(levels[l - 1]):
             break
         i = ci
         l -= 1
-    return (l, i)
+    return (l,i)
 
 def _node_start(nd):
     return nd[1] << nd[0]
 
-def _coverage_ok(m, nodes):
+def _coverage_ok(m,nodes):
     cur = 0
-    for l, i in sorted(nodes, key=_node_start):
+    for l,i in sorted(nodes,key=_node_start):
         st = i << l
         ed = st + (1 << l)
         if ed > m:
@@ -111,11 +113,11 @@ def _coverage_ok(m, nodes):
         cur = ed
     return cur == m
 
-def _path_options(levels, node, want, target, max_depth, keep):
+def _path_options(levels,node,want,target,max_depth,keep):
     vals = []
-    stack = [(node[0], node[1], 0, 0.0, 0)]
+    stack = [(node[0],node[1],0,0.0,0)]
     while stack:
-        l, i, dep, acc, bits = stack.pop()
+        l,i,dep,acc,bits = stack.pop()
         if dep >= max_depth or l <= 0:
             continue
         ci = i + i
@@ -130,49 +132,49 @@ def _path_options(levels, node, want, target, max_depth, keep):
         nb1 = nb0 | 1
         dep2 = dep + 1
         if nd * want > 0.0 or abs(nd) < 0.125:
-            vals.append((nd, dep2, nb0))
-        stack.append((l - 1, ci, dep2, nd, nb0))
-        stack.append((l - 1, ci + 1, dep2, nd, nb1))
+            vals.append((nd,dep2,nb0))
+        stack.append((l - 1,ci,dep2,nd,nb0))
+        stack.append((l - 1,ci + 1,dep2,nd,nb1))
 
-    out = [(0.0, 0, 0)]
+    out = [(0.0,0,0)]
     if not vals:
         return out
     seen = set()
-    lim = max(20, keep)
+    lim = max(20,keep)
     views = (
-        lambda x: (-abs(x[0]) / x[1], x[1]),
-        lambda x: (abs(target - abs(x[0])), x[1]),
-        lambda x: (abs(x[0]), x[1]),
-        lambda x: (x[1], abs(target - abs(x[0]))),
+        lambda x: (-abs(x[0]) / x[1],x[1]),
+        lambda x: (abs(target - abs(x[0])),x[1]),
+        lambda x: (abs(x[0]),x[1]),
+        lambda x: (x[1],abs(target - abs(x[0]))),
     )
     for key in views:
         vals.sort(key=key)
-        for v, c, bits in vals[:lim]:
-            k = (round(v, 6), c)
+        for v,c,bits in vals[:lim]:
+            k = (round(v,6),c)
             if k not in seen:
                 seen.add(k)
-                out.append((v, c, bits))
+                out.append((v,c,bits))
                 if len(out) >= keep:
                     return out
     return out
 
-def _nodes_for_option(levels, node, cost, bits):
-    l, i = node
+def _nodes_for_option(levels,node,cost,bits):
+    l,i = node
     if cost <= 0:
         return [node]
     out = []
-    for sh in range(cost - 1, -1, -1):
+    for sh in range(cost - 1,-1,-1):
         bit = (bits >> sh) & 1
         left = i + i
-        other = _canonical(levels, l - 1, left + (1 - bit))
+        other = _canonical(levels,l - 1,left + (1 - bit))
         out.append(other)
         i = left + bit
         l -= 1
-        l, i = _canonical(levels, l, i)
-    out.append(_canonical(levels, l, i))
+        l,i = _canonical(levels,l,i)
+    out.append(_canonical(levels,l,i))
     return out
 
-def _approx_score(err, total, n, groups):
+def _approx_score(err,total,n,groups):
     C = (n - groups) + 2 * (groups - 1)
     eta = abs(err) / (total + 1e-10)
     if eta <= 0.0:
@@ -185,42 +187,42 @@ def _approx_score(err, total, n, groups):
             a = 1.0
     return a * ((n - 1) / C)
 
-def _prune(nxt, E, total, n, base_groups, cap):
+def _prune(nxt,E,total,n,base_groups,cap):
     if len(nxt) <= cap:
-        nxt.sort(key=lambda st: -_approx_score(E + st[0], total, n, base_groups + st[1]))
+        nxt.sort(key=lambda st: -_approx_score(E + st[0],total,n,base_groups + st[1]))
         return nxt
     pr = []
     seen = set()
     def add(st):
-        k = (round((E + st[0]) * 4096.0), st[1])
+        k = (round((E + st[0]) * 4096.0),st[1])
         if k not in seen:
             seen.add(k)
             pr.append(st)
             return True
         return False
-    nxt.sort(key=lambda st: -_approx_score(E + st[0], total, n, base_groups + st[1]))
+    nxt.sort(key=lambda st: -_approx_score(E + st[0],total,n,base_groups + st[1]))
     for st in nxt[:cap // 2]:
         add(st)
-    nxt.sort(key=lambda st: (abs(E + st[0]), st[1]))
+    nxt.sort(key=lambda st: (abs(E + st[0]),st[1]))
     for st in nxt[:cap // 3]:
         add(st)
-    nxt.sort(key=lambda st: (st[1], abs(E + st[0])))
+    nxt.sort(key=lambda st: (st[1],abs(E + st[0])))
     for st in nxt[:cap // 3]:
         add(st)
     return pr[:cap]
 
-def _frontier_search(n, total, order, hvals, has_zero=False, sparse=False):
+def _frontier_search(n,total,order,hvals,has_zero=False,sparse=False):
     m = len(order)
     if m <= 1:
         return None
-    max_b = min(16, max(1, (m - 1).bit_length()))
-    levels = _build_levels(hvals, max_b)
+    max_b = min(16,max(1,(m - 1).bit_length()))
+    levels = _build_levels(hvals,max_b)
     best = None
     if sparse:
-        cand = (max_b, max_b - 1, max_b - 2, max_b - 3, 16, 15, 14, 13)
+        cand = (max_b,max_b - 1,max_b - 2,max_b - 3,16,15,14,13)
         bvals = tuple(dict.fromkeys(b for b in cand if b >= 1))
     else:
-        bvals = (16, 15, 14)
+        bvals = (16,15,14)
     for b in bvals:
         if b >= len(levels):
             continue
@@ -230,11 +232,11 @@ def _frontier_search(n, total, order, hvals, has_zero=False, sparse=False):
         nodes = []
         seen = set()
         bad = False
-        for i, v in enumerate(raw):
+        for i,v in enumerate(raw):
             if not math.isfinite(v):
                 bad = True
                 break
-            nd = _canonical(levels, b, i)
+            nd = _canonical(levels,b,i)
             if nd not in seen:
                 seen.add(nd)
                 nodes.append(nd)
@@ -244,7 +246,7 @@ def _frontier_search(n, total, order, hvals, has_zero=False, sparse=False):
         G0 = len(nodes) + (1 if has_zero else 0)
         if G0 <= 1 or G0 > 34:
             continue
-        base_sc, base_out = _eval_nodes(levels, nodes, total, n, has_zero)
+        base_sc,base_out = _eval_nodes(levels,nodes,total,n,has_zero)
         local_sc = base_sc
         local_nodes = nodes
         E = base_out - total
@@ -270,45 +272,45 @@ def _frontier_search(n, total, order, hvals, has_zero=False, sparse=False):
                 keep = 80
                 beam_cap = 300
                 exact_cap = 100
-            max_extra = max(0, group_cap - G0)
+            max_extra = max(0,group_cap - G0)
             if max_extra > 0:
-                per = abs(E) / max(1, len(nodes))
-                opts = [_path_options(levels, nd, want, per, min(13, nd[0]), keep) for nd in nodes]
-                beam = [(0.0, 0, ())]
-                for bi, olist in enumerate(opts):
+                per = abs(E) / max(1,len(nodes))
+                opts = [_path_options(levels,nd,want,per,min(13,nd[0]),keep) for nd in nodes]
+                beam = [(0.0,0,())]
+                for bi,olist in enumerate(opts):
                     nxt = []
-                    for d0, c0, ch0 in beam:
-                        for oi, (dv, dc, bits) in enumerate(olist):
+                    for d0,c0,ch0 in beam:
+                        for oi,(dv,dc,bits) in enumerate(olist):
                             nc = c0 + dc
                             if nc <= max_extra:
                                 if dc:
-                                    nxt.append((d0 + dv, nc, ch0 + ((bi, oi),)))
+                                    nxt.append((d0 + dv,nc,ch0 + ((bi,oi),)))
                                 else:
-                                    nxt.append((d0, c0, ch0))
+                                    nxt.append((d0,c0,ch0))
                     if not nxt:
                         break
-                    beam = _prune(nxt, E, total, n, G0, beam_cap)
-                for _, _, ch in beam[:exact_cap]:
-                    cmap = {bi: opts[bi][oi] for bi, oi in ch}
+                    beam = _prune(nxt,E,total,n,G0,beam_cap)
+                for _,_,ch in beam[:exact_cap]:
+                    cmap = {bi: opts[bi][oi] for bi,oi in ch}
                     ns = []
-                    for bi, nd in enumerate(nodes):
+                    for bi,nd in enumerate(nodes):
                         if bi in cmap:
-                            _, dc, bits = cmap[bi]
-                            ns.extend(_nodes_for_option(levels, nd, dc, bits))
+                            _,dc,bits = cmap[bi]
+                            ns.extend(_nodes_for_option(levels,nd,dc,bits))
                         else:
                             ns.append(nd)
                     ns.sort(key=_node_start)
-                    sc2, _ = _eval_nodes(levels, ns, total, n, has_zero)
+                    sc2,_ = _eval_nodes(levels,ns,total,n,has_zero)
                     if sc2 > local_sc:
                         local_sc = sc2
                         local_nodes = ns
-        if not _coverage_ok(m, local_nodes):
+        if not _coverage_ok(m,local_nodes):
             continue
         if best is None or local_sc > best[0]:
-            best = (local_sc, order, levels, local_nodes, has_zero)
+            best = (local_sc,order,levels,local_nodes,has_zero)
     return best
 
-def _make_pair_tree(items, prec):
+def _make_pair_tree(items,prec):
     items = list(items)
     if not items:
         return ''
@@ -328,33 +330,33 @@ def _make_pair_tree(items, prec):
         items = nxt
     return items[0]
 
-def _emit_power(tokens, order, st, size):
+def _emit_power(tokens,order,st,size):
     if size == 1:
         tokens.append(str(order[st] + 1))
         return
     h = size >> 1
     tokens.append('(fp16 ')
-    _emit_power(tokens, order, st, h)
+    _emit_power(tokens,order,st,h)
     tokens.append(' ')
-    _emit_power(tokens, order, st + h, h)
+    _emit_power(tokens,order,st + h,h)
     tokens.append(')')
 
-def _emit_node(tokens, order, node):
-    l, i = node
+def _emit_node(tokens,order,node):
+    l,i = node
     st = i << l
-    ed = min(len(order), st + (1 << l))
+    ed = min(len(order),st + (1 << l))
     if ed <= st:
         return
     k = ed - st
     if k == 1:
         tokens.append(str(order[st] + 1))
     elif k == (1 << l):
-        _emit_power(tokens, order, st, k)
+        _emit_power(tokens,order,st,k)
     else:
-        tokens.append(_make_pair_tree((str(order[j] + 1) for j in range(st, ed)), 'fp16'))
+        tokens.append(_make_pair_tree((str(order[j] + 1) for j in range(st,ed)),'fp16'))
 
-def _build_answer(plan, zeros):
-    sc, order, levels, nodes, has_zero = plan
+def _build_answer(plan,zeros):
+    sc,order,levels,nodes,has_zero = plan
     pieces = []
     if zeros:
         if len(zeros) == 1:
@@ -363,12 +365,12 @@ def _build_answer(plan, zeros):
             pieces.append('(fp16 ' + ' '.join(str(i + 1) for i in zeros) + ')')
     for nd in nodes:
         toks = []
-        _emit_node(toks, order, nd)
+        _emit_node(toks,order,nd)
         if toks:
             pieces.append(''.join(toks))
-    return _make_pair_tree(pieces, 'fp32')
+    return _make_pair_tree(pieces,'fp32')
 
-def _choose(items, T, SCALE, MARGIN):
+def _choose(items,T,SCALE,MARGIN):
     items.sort(reverse=True)
 
     R = int((T + MARGIN) * SCALE + 1.999999)
@@ -383,7 +385,7 @@ def _choose(items, T, SCALE, MARGIN):
     bits = 1
     pref = [bits]
 
-    for u, _ in items:
+    for u,_ in items:
         if u <= R:
             bits |= (bits << u) & mask
         pref.append(bits)
@@ -421,16 +423,16 @@ def _choose(items, T, SCALE, MARGIN):
             break
 
         i = j - 1
-        u, bi = items[i]
+        u,bi = items[i]
         selected.append(bi)
         s -= u
         hi = i
 
     return selected
 
-def _fallback_solve(n: int, values: List[float]) -> str:
+def _fallback_solve(n: int,values: List[float]) -> str:
     if n < 1000:
-        return "(fp32 " + " ".join(str(i) for i in range(1, n + 1)) + ")"
+        return "(fp32 " + " ".join(str(i) for i in range(1,n + 1)) + ")"
 
     B = 1280
     L = 192
@@ -445,7 +447,7 @@ def _fallback_solve(n: int, values: List[float]) -> str:
     hv0 = _half_list(vals)
     hvals = [hv0[i] for i in order]
 
-    starts = list(range(0, n, B))
+    starts = list(range(0,n,B))
     g = len(starts)
     full = n // B
     rem = n - full * B
@@ -456,7 +458,7 @@ def _fallback_solve(n: int, values: List[float]) -> str:
     mid_full = B // 2
     mid_last = rem // 2 if rem else 0
 
-    for off in range(1, B):
+    for off in range(1,B):
         vo = hvals[off::B]
         k = len(vo)
 
@@ -478,19 +480,19 @@ def _fallback_solve(n: int, values: List[float]) -> str:
     if rem and left2_last is None:
         left2_last = hvals[full * B]
 
-    def seg_full(a, b):
+    def seg_full(a,b):
         if not full:
             return ()
         cur = tuple(hvals[a:full * B:B])
-        for off in range(a + 1, b):
+        for off in range(a + 1,b):
             vo = hvals[off:full * B:B]
             cur = tuple(_half_list([cur[i] + vo[i] for i in range(full)]))
         return cur
 
-    right2 = seg_full(mid_full, B) if full else ()
+    right2 = seg_full(mid_full,B) if full else ()
 
     partials = []
-    for i in range(0, g, L):
+    for i in range(0,g,L):
         partials.append(_f32_pair(allv[i:i + L]))
 
     base = sum(partials)
@@ -508,7 +510,7 @@ def _fallback_solve(n: int, values: List[float]) -> str:
         if x > 0.0:
             u = int(x * SCALE + 0.5)
             if u > 0:
-                items.append((u, bi))
+                items.append((u,bi))
 
     if rem:
         bi = full
@@ -518,7 +520,7 @@ def _fallback_solve(n: int, values: List[float]) -> str:
         ed = n
 
         r = hvals[mid]
-        for p in range(mid + 1, ed):
+        for p in range(mid + 1,ed):
             r = _h(r + hvals[p])
 
         d = left2_last + r - allv[bi]
@@ -527,15 +529,15 @@ def _fallback_solve(n: int, values: List[float]) -> str:
         if x > 0.0:
             u = int(x * SCALE + 0.5)
             if u > 0:
-                items.append((u, bi))
+                items.append((u,bi))
 
-    sel2 = set(_choose(items, T, SCALE, MARGIN))
+    sel2 = set(_choose(items,T,SCALE,MARGIN))
 
-    def eval_choice(pcmap, segvals=None):
+    def eval_choice(pcmap,segvals=None):
         outs = []
 
         for bi in range(g):
-            pc = pcmap.get(bi, 1)
+            pc = pcmap.get(bi,1)
 
             if pc == 2:
                 if bi < full:
@@ -549,7 +551,7 @@ def _fallback_solve(n: int, values: List[float]) -> str:
 
                     la = left2_last
                     r = hvals[mid]
-                    for p in range(mid + 1, ed):
+                    for p in range(mid + 1,ed):
                         r = _h(r + hvals[p])
 
                     outs.append(la)
@@ -561,7 +563,7 @@ def _fallback_solve(n: int, values: List[float]) -> str:
                 outs.append(allv[bi])
 
         ps = []
-        for i in range(0, len(outs), L):
+        for i in range(0,len(outs),L):
             ps.append(_f32_pair(outs[i:i + L]))
 
         S = sum(ps)
@@ -570,26 +572,26 @@ def _fallback_solve(n: int, values: List[float]) -> str:
         C = (n - groups) + 2 * (groups - m) + 8 * (m - 1)
 
         eta = abs(S - total) / (total + 1e-10)
-        alpha = 1.0 if eta == 0.0 else min(1.0, max(0.0, -math.log2(eta) / 24.0))
+        alpha = 1.0 if eta == 0.0 else min(1.0,max(0.0,-math.log2(eta) / 24.0))
         beta = (n - 1) / C
 
-        return alpha * beta, eta
+        return alpha * beta,eta
 
     pc2 = {bi: 2 for bi in sel2}
     best_pc = pc2
-    best_score, best_eta = eval_choice(pc2)
+    best_score,best_eta = eval_choice(pc2)
 
     if best_eta > 6.2e-8:
         bestx = p2_delta[:]
         bestpc = [2 if d != 0.0 else 1 for d in p2_delta]
 
-        for pc in (4, 8):
+        for pc in (4,8):
             if full:
                 seglen = B // pc
                 segs = []
 
                 for q in range(pc):
-                    segs.append(seg_full(q * seglen, (q + 1) * seglen))
+                    segs.append(seg_full(q * seglen,(q + 1) * seglen))
 
                 for i in range(full):
                     ss = 0.0
@@ -612,7 +614,7 @@ def _fallback_solve(n: int, values: List[float]) -> str:
                     b = st + ((q + 1) * k) // pc
                     cur = hvals[a]
 
-                    for p in range(a + 1, b):
+                    for p in range(a + 1,b):
                         cur = _h(cur + hvals[p])
 
                     ss += cur
@@ -623,23 +625,23 @@ def _fallback_solve(n: int, values: List[float]) -> str:
                     bestpc[bi] = pc
 
         items = []
-        for bi, d in enumerate(bestx):
+        for bi,d in enumerate(bestx):
             x = d * sign
             if x > 0.0:
                 u = int(x * SCALE + 0.5)
                 if u > 0:
-                    items.append((u, bi))
+                    items.append((u,bi))
 
-        sel = set(_choose(items, T, SCALE, MARGIN))
+        sel = set(_choose(items,T,SCALE,MARGIN))
         pcm = {bi: bestpc[bi] for bi in sel}
 
         segvals = {}
-        for bi, pc in pcm.items():
+        for bi,pc in pcm.items():
             if pc <= 2:
                 continue
 
             st = bi * B
-            ed = min(n, st + B)
+            ed = min(n,st + B)
             k = ed - st
             arr = []
 
@@ -648,24 +650,24 @@ def _fallback_solve(n: int, values: List[float]) -> str:
                 b = st + ((q + 1) * k) // pc
                 cur = hvals[a]
 
-                for p in range(a + 1, b):
+                for p in range(a + 1,b):
                     cur = _h(cur + hvals[p])
 
                 arr.append(cur)
 
             segvals[bi] = arr
 
-        sc, _ = eval_choice(pcm, segvals)
+        sc,_ = eval_choice(pcm,segvals)
         if sc > best_score:
             best_pc = pcm
 
     so = [str(i + 1) for i in order]
     groups = []
 
-    for bi, st in enumerate(starts):
-        ed = min(n, st + B)
+    for bi,st in enumerate(starts):
+        ed = min(n,st + B)
         k = ed - st
-        pc = best_pc.get(bi, 1)
+        pc = best_pc.get(bi,1)
 
         if pc <= 1 or pc > k:
             groups.append("(fp16 " + " ".join(so[st:ed]) + ")")
@@ -676,13 +678,13 @@ def _fallback_solve(n: int, values: List[float]) -> str:
                 groups.append("(fp16 " + " ".join(so[a:b]) + ")")
 
     partial = []
-    for i in range(0, len(groups), L):
+    for i in range(0,len(groups),L):
         part = groups[i:i + L]
-        partial.append(part[0] if len(part) == 1 else _make_pair_tree(part, "fp32"))
+        partial.append(part[0] if len(part) == 1 else _make_pair_tree(part,"fp32"))
 
     return partial[0] if len(partial) == 1 else "(fp64 " + " ".join(partial) + ")"
 
-def solve(n: int, values: List[float]) -> str:
+def solve(n: int,values: List[float]) -> str:
     total = math.fsum(values)
     order = list(range(n))
     order.sort(key=values.__getitem__)
@@ -701,7 +703,7 @@ def solve(n: int, values: List[float]) -> str:
 
     hvals = [hv_unsorted[i] for i in dense_order]
 
-    best = _frontier_search(n, total, dense_order, hvals, False, False)
+    best = _frontier_search(n,total,dense_order,hvals,False,False)
     best_zeros = []
 
     zc = 0
@@ -711,18 +713,18 @@ def solve(n: int, values: List[float]) -> str:
     if zc > n // 8 and zc < n - 1:
         zeros = []
         active = []
-        for i, x in enumerate(values):
+        for i,x in enumerate(values):
             if x == 0.0:
                 zeros.append(i)
             else:
                 active.append(i)
         active.sort(key=values.__getitem__)
         ah = [hv_unsorted[i] for i in active]
-        sp = _frontier_search(n, total, active, ah, True, True)
+        sp = _frontier_search(n,total,active,ah,True,True)
         if sp is not None and (best is None or sp[0] > best[0]):
             best = sp
             best_zeros = zeros
 
     if best is not None and best[0] >= 0.9990:
-        return _build_answer(best, best_zeros)
-    return _fallback_solve(n, values)
+        return _build_answer(best,best_zeros)
+    return _fallback_solve(n,values)
