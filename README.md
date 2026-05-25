@@ -714,8 +714,8 @@ The chart below shows which tiers each hand-tested baseline cleared. AI submissi
 
 | Baseline | Score | Tier I (>5,000) | Tier II (>7,000) | Tier III (>7,500) | Tier IV (>9,995) |
 |---|---|:---:|:---:|:---:|:---:|
-| Balanced-Bucket Residual Repair | 9,999.85 | ✓ | ✓ | ✓ | ✓ |
-| Selective-Exposure Beam Search | 9,998.97 | ✓ | ✓ | ✓ | ✓ |
+| [Balanced-Bucket Residual Repair](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/Balanced-Bucket%20Residual%20Repair.py) | 9,999.85 | ✓ | ✓ | ✓ | ✓ |
+| [Selective-Exposure Beam Search](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/Selective-Exposure%20Beam%20Search.py) | 9,998.97 | ✓ | ✓ | ✓ | ✓ |
 | [Sorted, chunks=12, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks12_fp32_tree.py) | 7,739.31 | ✓ | ✓ | ✓ | |
 | [Sorted, adaptive chunk by mean, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_adaptive_chunk_fp32_tree.py) | 7,672.71 | ✓ | ✓ | ✓ | |
 | [Sorted, chunks=16, fp32 tree](https://github.com/mikelou1/mixed-precision-summation/blob/main/code/samples/sorted_chunks16_fp32_tree.py) | 7,554.19 | ✓ | ✓ | ✓ | |
