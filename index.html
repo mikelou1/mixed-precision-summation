@@ -1,10 +1,9 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Step 1: Adding numbers</title>
+<title>demo</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css">
 <style>
   body { font-family: monospace; background: #f7f8fa; color: #2c2c2a; max-width: 760px; margin: 0 auto; padding: 24px; line-height: 1.55; }
@@ -39,7 +38,7 @@
   .prec-row { display: flex; align-items: baseline; gap: 14px; }
   .prec-row .lbl { width: 4ch; }
   .digits { white-space: pre; }
-  .digits .need { border-right: 2px solid #9e3a1c; padding-right: 1px; margin-right: 1px; }
+  .digits .drift { color: #c9c6bd; }
 </style>
 </head>
 <body>
@@ -47,7 +46,6 @@
 <h1>First, just add some numbers</h1>
 
 <h2>Add these by hand</h2>
-<p>Line them up, add them, and type the total. Press Enter to check.</p>
 
 <div class="box">
   <div class="sum" id="h_sum"></div>
@@ -57,7 +55,7 @@
 
 <div id="py_block" class="hidden">
 <h2>Now let a program do it</h2>
-<p>The same sum in Python, using <span class="navy">Decimal</span>, a mode that keeps every digit, however many it takes. Press run.</p>
+<p>The same sum in Python, using <span class="navy">Decimal</span>. Press run.</p>
 
 <div class="box">
 <pre><code class="language-python" id="py_code"></code></pre>
@@ -71,11 +69,12 @@
 
 <div id="fp_block" class="hidden">
 <h2>But computers do not keep every digit</h2>
-<p>To stay fast, each number gets a fixed amount of space, a fixed digit budget. The three common sizes come from the <a href="https://ieeexplore.ieee.org/document/8766229" target="_blank" rel="noopener">IEEE&nbsp;754 standard</a>. Same sum, each size:</p>
+<p>To stay fast, each number gets a fixed amount of space, a fixed digit budget. The three common sizes come from the <a href="https://ieeexplore.ieee.org/document/8766229" target="_blank" rel="noopener">IEEE&nbsp;754 standard</a>: fp64 keeps about 16 digits, fp32 about 7, fp16 about 3.</p>
+<p>Watch what happens when each one tries to store <span class="navy">0.1</span>. One tenth needs endless digits in binary, so each format keeps only the digits its budget allows. The black digits are what it holds. Everything in <span class="gray">gray</span> is drift, the precision that format does not have:</p>
 
 <div class="box">
   <div class="prec-rows" id="prec_rows"></div>
-  <p class="gray" style="margin-top:14px">The <span style="color:#9e3a1c">line</span> marks how many digits we actually need here. Left of it is enough. fp16 runs out before reaching it; fp32 and fp64 have digits to spare.</p>
+  <p class="gray" style="margin-top:14px">fp16 holds about 3 digits, so it stores something close to but not quite 0.1. fp32 holds about 7, fp64 about 16. None is exact, since one tenth has no exact binary form, but a bigger budget keeps more real digits before the drift starts. A tiny error on one number, but it builds up across many.</p>
 </div>
 </div>
 
@@ -190,9 +189,9 @@ function checkHand(){
   const msg = document.getElementById("h_msg");
   if (isNaN(v)) { msg.innerHTML = '<span class="gray">type a number first</span>'; return; }
   if (Math.abs(v - TRUE) < 1e-9) {
-    msg.innerHTML = `<span class="green">right, it is ${TRUE}. Now watch a program do the same.</span>`;
+    msg.innerHTML = `<span class="green">correct. Now let's use a program.</span>`;
   } else {
-    msg.innerHTML = `<span class="red">not quite, the total is ${TRUE}.</span> <span class="gray">scroll on either way.</span>`;
+    msg.innerHTML = `<span class="red">wrong, but </span> <span class="gray">scroll on either way.</span>`;
   }
   reveal("py_block");
 }
@@ -226,26 +225,34 @@ function f16poly(x){
   return (s?-1:1)*(1+m16/1024)*Math.pow(2,e16-15);
 }
 const f16=f16poly, cast=(x,p)=>p===16?f16(x):p===32?f32(x):x;
-function sumP(p){let a=cast(NUMS[0],p);for(let i=1;i<NUMS.length;i++)a=cast(a+cast(NUMS[i],p),p);return a;}
-const NEED_SIG = 5;
-const CHAR_W = 12;
+
+const SHOW = 0.1;
+const BUDGET = {16:3, 32:7, 64:16};
 
 function fillBits(){
   const rows = document.getElementById("prec_rows");
   rows.innerHTML = "";
+  const tref = document.createElement("div");
+  tref.className = "prec-row";
+  tref.innerHTML = `<span class="lbl navy">true</span><span class="digits">0.1000000 &hellip; <span class="gray">(exactly one tenth)</span></span>`;
+  rows.appendChild(tref);
+
   [64,32,16].forEach(p=>{
-    const r = sumP(p);
-    const rStr = r.toPrecision(10);
-    let sig=0, cut=rStr.length;
-    for(let k=0;k<rStr.length;k++){
-      if(/[0-9]/.test(rStr[k])){ sig++; if(sig===NEED_SIG){ cut=k+1; break; } }
+    const full = cast(SHOW, p).toPrecision(18);
+    let sig=0, cut=full.length, started=false;
+    for(let k=0;k<full.length;k++){
+      if(/[0-9]/.test(full[k])){
+        if(full[k]!=='0') started=true;
+        if(started) sig++;
+        if(started && sig===BUDGET[p]){ cut=k+1; break; }
+      }
     }
+    const cls = p===64?"fp64":p===32?"fp32":"fp16";
     const row = document.createElement("div");
     row.className = "prec-row";
-    const cls = p===64?"fp64":p===32?"fp32":"fp16";
     row.innerHTML =
       `<span class="lbl ${cls}">fp${p}</span>`+
-      `<span class="digits"><span class="need">${rStr.slice(0,cut)}</span>${rStr.slice(cut)}</span>`;
+      `<span class="digits">${full.slice(0,cut)}<span class="drift">${full.slice(cut)}</span></span>`;
     rows.appendChild(row);
   });
 }
